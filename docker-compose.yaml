@@ -1,0 +1,61 @@
+services:
+  whisperwebdav:
+    image: ghcr.io/your-org/whisperwebdav:latest
+    restart: unless-stopped
+    environment:
+      # Required: WebDAV connection
+      WEBDAV_URL: "https://your-webdav-server.example.com"
+      WEBDAV_USERNAME: "your_username"
+      WEBDAV_PASSWORD: "your_password"
+      # WEBDAV_TOKEN: ""         # Alternative to username/password
+
+      # Watch path on the WebDAV server
+      WEBDAV_WATCH_PATH: "/recordings"
+
+      # Polling interval in seconds
+      POLL_INTERVAL_SECONDS: "60"
+
+      # Transcription models (KBLab KB-Whisper)
+      TRANSCRIPTION_MODEL: "KBLab/kb-whisper-large"
+      EMISSIONS_MODEL: "KBLab/kb-wav2vec2-large"
+      VAD_MODEL: "silero"         # silero or pyannote
+
+      # HuggingFace token (required for pyannote VAD or gated models)
+      # HF_TOKEN: ""
+
+      # Language (BCP-47 code)
+      LANGUAGE: "sv"
+
+      # Model cache directory (mounted as volume below)
+      CACHE_DIR: "/app/models"
+
+      # GPU support (set to true if you have a CUDA-enabled GPU)
+      GPU_ENABLED: "false"
+
+      # Output formats: comma-separated list of txt,srt,json,timestamps
+      OUTPUT_FORMATS: "txt,srt"
+
+      # Optional subdirectory on WebDAV for output files
+      # OUTPUT_SUBDIR: "transcripts"
+
+      # Apprise notification URLs (comma-separated)
+      # APPRISE_URLS: "slack://TokenA/TokenB/TokenC"
+
+      # Logging
+      LOG_LEVEL: "INFO"
+      LOG_FORMAT: "plain"         # plain or json
+
+    volumes:
+      - model-cache:/app/models
+
+    # GPU support — uncomment to enable NVIDIA GPU
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+volumes:
+  model-cache:

@@ -1,0 +1,36 @@
+[build-system]
+requires = ["uv_build"]
+build-backend = "uv_build"
+
+[project]
+name = "whisperwebdav"
+version = "0.1.0"
+description = "Daemon that polls a WebDAV share and transcribes audio files using KB-Whisper models"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.14"
+dependencies = [
+    "easytranscriber",
+    "easyaligner",
+    "webdavclient3",
+    "apprise",
+    "pydantic-settings",
+    "structlog",
+]
+
+[project.scripts]
+whisperwebdav = "whisperwebdav.watcher:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-mock>=3.14",
+    "pytest-cov>=6.0",
+]
+
+[tool.uv]
+package = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=src --cov-report=term-missing"

@@ -10,3 +10,4 @@ build/
 htmlcov/
 .pytest_cache/
 *.pyc
+tests/fixtures/

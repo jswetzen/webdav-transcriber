@@ -24,8 +24,8 @@ def transcribe(audio_local_path: str, config: Config) -> TranscriptionResult:
     The caller is responsible for cleaning up result.workspace.
     """
     # Import here to avoid slow startup if module not available
-    from easyaligner import load_tokenizer, text_normalizer  # type: ignore[import]
-    from easytranscriber import pipeline  # type: ignore[import]
+    from easyaligner.text import load_tokenizer, text_normalizer  # type: ignore[import]
+    from easytranscriber.pipelines import pipeline  # type: ignore[import]
 
     workspace = Path(tempfile.mkdtemp())
     try:
@@ -59,8 +59,12 @@ def transcribe(audio_local_path: str, config: Config) -> TranscriptionResult:
             hf_token=config.hf_token or None,
         )
 
+        # alignment_pipeline returns list[list[Segment]] (one inner list per file)
+        # We always pass one file, so unpack the first element
+        segments = result[0] if result else []
+
         return TranscriptionResult(
-            segments=result,
+            segments=segments,
             alignments_dir=alignments_dir,
             workspace=workspace,
         )

@@ -37,7 +37,7 @@ FIXTURE_DIR = Path(__file__).parent / "fixtures"
 AUDIO_FIXTURE = FIXTURE_DIR / "axel_pettersson.ogg"
 
 TINY_MODEL = "KBLab/kb-whisper-tiny"
-TINY_EMISSIONS = "KBLab/kb-wav2vec2-large"  # smallest available aligner
+TINY_EMISSIONS = "KBLab/wav2vec2-large-voxrex-swedish"  # correct model ID
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -41,7 +41,7 @@ class Config(BaseSettings):
 
     # Transcription models
     transcription_model: str = "KBLab/kb-whisper-large"
-    emissions_model: str = "KBLab/kb-wav2vec2-large"
+    emissions_model: str = "KBLab/wav2vec2-large-voxrex-swedish"
     vad_model: Literal["silero", "pyannote"] = "silero"
     hf_token: str = ""
     language: str = "sv"

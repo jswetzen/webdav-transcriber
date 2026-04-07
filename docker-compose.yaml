@@ -17,7 +17,7 @@ services:
 
       # Transcription models (KBLab KB-Whisper)
       TRANSCRIPTION_MODEL: "KBLab/kb-whisper-large"
-      EMISSIONS_MODEL: "KBLab/kb-wav2vec2-large"
+      EMISSIONS_MODEL: "KBLab/wav2vec2-large-voxrex-swedish"
       VAD_MODEL: "silero"         # silero or pyannote
 
       # HuggingFace token (required for pyannote VAD or gated models)

@@ -34,6 +34,9 @@ RUN SITE=$(python -c "import site; print(site.getsitepackages()[0])") && \
 # Stage 2: final runtime image
 FROM python:3.14-slim
 
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN groupadd --system appuser && useradd --system --gid appuser appuser
 RUN mkdir -p /home/appuser && chown appuser:appuser /home/appuser
 
@@ -43,6 +46,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
 COPY --from=builder /app/.venv /app/.venv
 
 RUN mkdir /app/models && chown appuser:appuser /app/models
+RUN mkdir -p /home/appuser && chown appuser:appuser /home/appuser
+
+# Patch upstream deps until fixes are released
+COPY collators.py /app/.venv/lib/python3.14/site-packages/easyaligner/data/collators.py
+COPY easyaligner_pipelines.py /app/.venv/lib/python3.14/site-packages/easyaligner/pipelines.py
+COPY easytranscriber_pipelines.py /app/.venv/lib/python3.14/site-packages/easytranscriber/pipelines.py
+COPY ct2.py /app/.venv/lib/python3.14/site-packages/easytranscriber/asr/ct2.py
+RUN find /app/.venv/lib/python3.14/site-packages -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
 
 ENV PATH="/app/.venv/bin:$PATH"
 ENV HOME=/home/appuser

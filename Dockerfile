@@ -40,9 +40,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
 RUN groupadd --system appuser && useradd --system --gid appuser appuser
 RUN mkdir -p /home/appuser && chown appuser:appuser /home/appuser
 
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
-
 COPY --from=builder /app/.venv /app/.venv
 
 RUN mkdir /app/models && chown appuser:appuser /app/models

@@ -21,6 +21,16 @@ COPY src/ ./src/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-editable
 
+# CTranslate2 dlopens libcublas.so.12/libcudnn.so.9 on GPU. Wheels provide
+# these on x86_64 only; arm64 is CPU-only. libcuda.so.1 is injected at
+# runtime by NVIDIA Container Toolkit (--gpus all) or bind-mounted manually.
+RUN if [ "$(uname -m)" = "x86_64" ]; then \
+    uv pip install --python /app/.venv/bin/python --no-deps \
+        nvidia-cublas-cu12 nvidia-cudnn-cu12 && \
+    echo "/app/.venv/lib/python3.14/site-packages/nvidia/cublas/lib"  > /etc/ld.so.conf.d/cuda12-extras.conf && \
+    echo "/app/.venv/lib/python3.14/site-packages/nvidia/cudnn/lib" >> /etc/ld.so.conf.d/cuda12-extras.conf && \
+    ldconfig; fi
+
 # Apply patches for upstream library bugs
 COPY patches/ /tmp/patches/
 RUN SITE=$(python -c "import site; print(site.getsitepackages()[0])") && \
@@ -43,14 +53,6 @@ RUN mkdir -p /home/appuser && chown appuser:appuser /home/appuser
 COPY --from=builder /app/.venv /app/.venv
 
 RUN mkdir /app/models && chown appuser:appuser /app/models
-RUN mkdir -p /home/appuser && chown appuser:appuser /home/appuser
-
-# Patch upstream deps until fixes are released
-COPY collators.py /app/.venv/lib/python3.14/site-packages/easyaligner/data/collators.py
-COPY easyaligner_pipelines.py /app/.venv/lib/python3.14/site-packages/easyaligner/pipelines.py
-COPY easytranscriber_pipelines.py /app/.venv/lib/python3.14/site-packages/easytranscriber/pipelines.py
-COPY ct2.py /app/.venv/lib/python3.14/site-packages/easytranscriber/asr/ct2.py
-RUN find /app/.venv/lib/python3.14/site-packages -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
 
 ENV PATH="/app/.venv/bin:$PATH"
 ENV HOME=/home/appuser

@@ -1,6 +1,7 @@
 services:
   whisperwebdav:
-    image: ghcr.io/your-org/whisperwebdav:latest
+    image: ghcr.io/jswetzen/webdav-transcriber:main
+    # build: .  # uncomment to build locally instead
     restart: unless-stopped
     environment:
       # Required: WebDAV connection
@@ -29,7 +30,7 @@ services:
       # Model cache directory (mounted as volume below)
       CACHE_DIR: "/app/models"
 
-      # GPU support (set to true if you have a CUDA-enabled GPU)
+      # GPU support — set to "true" together with one of the GPU blocks below
       GPU_ENABLED: "false"
 
       # Output formats: comma-separated list of txt,srt,json,timestamps
@@ -47,8 +48,13 @@ services:
 
     volumes:
       - model-cache:/app/models
+      # GPU path B — uncomment along with the devices block below:
+      # - /usr/lib/x86_64-linux-gnu/libcuda.so.1:/usr/lib/x86_64-linux-gnu/libcuda.so.1:ro
+      # - /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1:/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1:ro
+      # - /usr/lib/x86_64-linux-gnu/libnvidia-ptxjitcompiler.so.1:/usr/lib/x86_64-linux-gnu/libnvidia-ptxjitcompiler.so.1:ro
 
-    # GPU support — uncomment to enable NVIDIA GPU
+    # --- GPU path A: Docker + NVIDIA Container Toolkit ---
+    # Also set GPU_ENABLED: "true" above.
     # deploy:
     #   resources:
     #     reservations:
@@ -56,6 +62,15 @@ services:
     #         - driver: nvidia
     #           count: 1
     #           capabilities: [gpu]
+
+    # --- GPU path B: Podman / bare LXC (no nvidia-container-toolkit) ---
+    # Also set GPU_ENABLED: "true" above, and uncomment the volume mounts above.
+    # devices:
+    #   - /dev/nvidia0
+    #   - /dev/nvidiactl
+    #   - /dev/nvidia-uvm
+    #   - /dev/nvidia-uvm-tools
+    #   - /dev/nvidia-modeset
 
 volumes:
   model-cache:

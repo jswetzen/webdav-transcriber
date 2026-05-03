@@ -472,7 +472,7 @@ wheels = [
 
 [[package]]
 name = "easyaligner"
-version = "0.2.1"
+version = "0.2.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "msgspec" },
@@ -486,14 +486,14 @@ dependencies = [
     { name = "tqdm" },
     { name = "transformers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e3/c0/3bf82d6d4e02a84a5118f9ed6e2ef855db8ba671f85eeb757de4a5f82b65/easyaligner-0.2.1.tar.gz", hash = "sha256:66e593dcf63030b906e5329a0fee8ccbacedf7dedbdd1999d7ff74cabeea5b5c", size = 44212, upload-time = "2026-04-14T14:25:11.83Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/40/49/a2ecd1f300c24eaeef9d31be69bfdc9e495803c91147387b3cc1164a7244/easyaligner-0.2.3.tar.gz", hash = "sha256:fd14cbcaa92e9136ca2fc8f57bc6be3ba91da838ca573fc09166b032b3c9d614", size = 44478, upload-time = "2026-05-02T19:47:44.381Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/07/01/9eb10af21477708657715fca627fe425622e08a424758a7c498e2fe970d8/easyaligner-0.2.1-py3-none-any.whl", hash = "sha256:83cb64074c0a5d4400afcddc719137bfa087b1a118796a7a430f2e28207c7c43", size = 48102, upload-time = "2026-04-14T14:25:12.659Z" },
+    { url = "https://files.pythonhosted.org/packages/a7/3e/c6fa46aedbe85a22454fbb600824fca5f9a07671a05cebe09400ea7f420f/easyaligner-0.2.3-py3-none-any.whl", hash = "sha256:d7da3c15996ca4d1570653afae4aff56ec1071cde69de426b42b2a8027416fbe", size = 48214, upload-time = "2026-05-02T19:47:45.539Z" },
 ]
 
 [[package]]
 name = "easytranscriber"
-version = "0.2.2"
+version = "0.2.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "ctranslate2" },
@@ -508,9 +508,9 @@ dependencies = [
     { name = "tqdm" },
     { name = "transformers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/12/4b/94429288986b17e3f545a1cb67a428e1f6b68112ad8eb70a2f8a8cf3be61/easytranscriber-0.2.2.tar.gz", hash = "sha256:e3651eea9a03dd55aa82432690963ecadd0ce74b48d49d130cd0e39686890fae", size = 27054, upload-time = "2026-04-19T18:04:36.044Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/3e/51/0b41d5312e48874065beefa9c24a78e2981313671e07da691cd4537b82a6/easytranscriber-0.2.3.tar.gz", hash = "sha256:10d3403607e01c08ccc66e6744b5dda236dc69a00b963f5bc5c04ecf100ede44", size = 27026, upload-time = "2026-05-02T20:45:25.661Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e2/fb/37d60673442e47de4ae6707aa0361f39798b6597171cdd711a75a8953335/easytranscriber-0.2.2-py3-none-any.whl", hash = "sha256:c56b7575cf1c4e28e742f467f2485ba6ce78fa6a3ba182008360595f251a69df", size = 31036, upload-time = "2026-04-19T18:04:36.984Z" },
+    { url = "https://files.pythonhosted.org/packages/9e/86/cbd30898ae6a03a07d63d39d78dd4cdc7b2c5d3a504db1a6d9c0545c0288/easytranscriber-0.2.3-py3-none-any.whl", hash = "sha256:2efd506c80f5ceb333fdf879cfcd228172afdd48bfe18374e88c876da5b5bc6d", size = 31010, upload-time = "2026-05-02T20:45:24.283Z" },
 ]
 
 [[package]]

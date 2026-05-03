@@ -31,15 +31,6 @@ RUN if [ "$(uname -m)" = "x86_64" ]; then \
     echo "/app/.venv/lib/python3.14/site-packages/nvidia/cudnn/lib" >> /etc/ld.so.conf.d/cuda12-extras.conf && \
     ldconfig; fi
 
-# Apply patches for upstream library bugs
-COPY patches/ /tmp/patches/
-RUN SITE=$(python -c "import site; print(site.getsitepackages()[0])") && \
-    cp /tmp/patches/easyaligner_collators.py      $SITE/easyaligner/data/collators.py && \
-    cp /tmp/patches/easyaligner_pipelines.py      $SITE/easyaligner/pipelines.py && \
-    cp /tmp/patches/easytranscriber_pipelines.py  $SITE/easytranscriber/pipelines.py && \
-    cp /tmp/patches/easytranscriber_ct2.py        $SITE/easytranscriber/asr/ct2.py && \
-    find $SITE/easyaligner $SITE/easytranscriber -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
-
 
 # Stage 2: final runtime image
 FROM python:3.14-slim

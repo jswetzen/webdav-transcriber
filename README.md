@@ -77,7 +77,16 @@ volumes:
 
 ## GPU Support
 
-Set `GPU_ENABLED=true` and enable the NVIDIA runtime in Docker Compose:
+Set `GPU_ENABLED=true` and pass the GPU through. Whichever path you take, also
+bump the container's shared-memory size — PyTorch DataLoader workers serialize
+tensors via `/dev/shm` and the 64 MB container default trips
+`RuntimeError: unable to allocate shared memory(shm)` partway through transcription:
+
+```yaml
+shm_size: "2gb"
+```
+
+### Path A: Docker + NVIDIA Container Toolkit
 
 ```yaml
 deploy:
@@ -87,6 +96,28 @@ deploy:
         - driver: nvidia
           count: 1
           capabilities: [gpu]
+```
+
+### Path B: Podman / bare LXC (no nvidia-container-toolkit)
+
+When the NVIDIA Container Toolkit isn't available (e.g. inside a Proxmox LXC),
+pass the device nodes directly and bind-mount the host's userspace driver
+libraries. The bind-mounted libs must match the host driver version exactly,
+so the host needs `libcuda.so.1` / `libnvidia-ml.so.1` /
+`libnvidia-ptxjitcompiler.so.1` SONAME symlinks pointing at the versioned files.
+
+```yaml
+devices:
+  - /dev/nvidia0
+  - /dev/nvidiactl
+  - /dev/nvidia-uvm
+  # Optional — only needed for profiling tools / display modesetting:
+  # - /dev/nvidia-uvm-tools
+  # - /dev/nvidia-modeset
+volumes:
+  - /usr/lib/x86_64-linux-gnu/libcuda.so.1:/usr/lib/x86_64-linux-gnu/libcuda.so.1:ro
+  - /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1:/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1:ro
+  - /usr/lib/x86_64-linux-gnu/libnvidia-ptxjitcompiler.so.1:/usr/lib/x86_64-linux-gnu/libnvidia-ptxjitcompiler.so.1:ro
 ```
 
 ## Notification URLs (Apprise)

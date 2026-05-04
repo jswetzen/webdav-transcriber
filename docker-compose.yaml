@@ -3,6 +3,10 @@ services:
     image: ghcr.io/jswetzen/webdav-transcriber:main
     # build: .  # uncomment to build locally instead
     restart: unless-stopped
+    # PyTorch DataLoader workers serialize tensors via /dev/shm; the 64 MB
+    # container default is too small and triggers
+    # "RuntimeError: unable to allocate shared memory(shm)" mid-transcription.
+    shm_size: "2gb"
     environment:
       # Required: WebDAV connection
       WEBDAV_URL: "https://your-webdav-server.example.com"
@@ -65,6 +69,8 @@ services:
 
     # --- GPU path B: Podman / bare LXC (no nvidia-container-toolkit) ---
     # Also set GPU_ENABLED: "true" above, and uncomment the volume mounts above.
+    # The first three devices are the minimum for headless CUDA compute;
+    # nvidia-uvm-tools (profiling) and nvidia-modeset (display) are optional.
     # devices:
     #   - /dev/nvidia0
     #   - /dev/nvidiactl

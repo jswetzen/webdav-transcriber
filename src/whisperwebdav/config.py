@@ -38,6 +38,7 @@ class Config(BaseSettings):
 
     # Polling
     poll_interval_seconds: int = 60
+    max_batch_size: int = 8
 
     # Transcription models
     transcription_model: str = "KBLab/kb-whisper-large"
@@ -58,6 +59,13 @@ class Config(BaseSettings):
     # Logging
     log_level: str = "INFO"
     log_format: Literal["json", "plain"] = "plain"
+
+    @field_validator("max_batch_size")
+    @classmethod
+    def validate_max_batch_size(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("max_batch_size must be >= 1")
+        return v
 
     @field_validator("language")
     @classmethod

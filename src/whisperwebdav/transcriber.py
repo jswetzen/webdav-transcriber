@@ -9,20 +9,31 @@ from .config import Config
 
 
 @dataclass
-class TranscriptionResult:
-    segments: list
-    alignments_dir: Path
+class BatchTranscriptionResult:
+    segments_by_path: dict[str, list]
     workspace: Path
 
 
-def transcribe(audio_local_path: str, config: Config) -> TranscriptionResult:
-    """Transcribe an audio file using the easytranscriber pipeline.
+def transcribe_batch(
+    audio_local_paths: list[str], config: Config
+) -> BatchTranscriptionResult:
+    """Transcribe a batch of audio files in a single easytranscriber pipeline call.
 
-    Creates a temporary workspace directory with vad/, transcriptions/,
-    emissions/, and alignments/ subdirectories.
-
-    The caller is responsible for cleaning up result.workspace.
+    All paths must reside in the same parent directory (easytranscriber's pipeline
+    takes one audio_dir + a list of filenames). The caller is responsible for
+    cleaning up result.workspace.
     """
+    if not audio_local_paths:
+        raise ValueError("audio_local_paths must be non-empty")
+
+    paths = [Path(p) for p in audio_local_paths]
+    parents = {p.parent for p in paths}
+    if len(parents) != 1:
+        raise ValueError(
+            f"All audio paths must share one parent directory; got {parents}"
+        )
+    audio_dir = next(iter(parents))
+
     # Import here to avoid slow startup if module not available
     from easyaligner.text import load_tokenizer, text_normalizer  # type: ignore[import]
     from easytranscriber.pipelines import pipeline  # type: ignore[import]
@@ -37,14 +48,12 @@ def transcribe(audio_local_path: str, config: Config) -> TranscriptionResult:
         for d in (vad_dir, transcriptions_dir, emissions_dir, alignments_dir):
             d.mkdir()
 
-        audio_path = Path(audio_local_path)
-
         result = pipeline(
             config.vad_model,
             config.emissions_model,
             config.transcription_model,
-            audio_paths=[audio_path.name],
-            audio_dir=str(audio_path.parent),
+            audio_paths=[p.name for p in paths],
+            audio_dir=str(audio_dir),
             language=config.language,
             tokenizer=load_tokenizer(config.tokenizer_name),
             text_normalizer_fn=text_normalizer,
@@ -59,13 +68,14 @@ def transcribe(audio_local_path: str, config: Config) -> TranscriptionResult:
             hf_token=config.hf_token or None,
         )
 
-        # alignment_pipeline returns list[list[Segment]] (one inner list per file)
-        # We always pass one file, so unpack the first element
-        segments = result[0] if result else []
+        # alignment_pipeline returns list[list[Segment]] — one inner list per file,
+        # in the same order as audio_paths.
+        segments_by_path: dict[str, list] = {}
+        for i, local_path in enumerate(audio_local_paths):
+            segments_by_path[local_path] = result[i] if i < len(result) else []
 
-        return TranscriptionResult(
-            segments=segments,
-            alignments_dir=alignments_dir,
+        return BatchTranscriptionResult(
+            segments_by_path=segments_by_path,
             workspace=workspace,
         )
     except Exception:

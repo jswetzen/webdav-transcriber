@@ -24,6 +24,7 @@ All configuration is done via environment variables (or a `.env` file).
 | `WEBDAV_TOKEN` | `""` | Bearer token (alternative to username/password) |
 | `WEBDAV_WATCH_PATH` | `"/"` | Path on WebDAV to watch for audio files |
 | `POLL_INTERVAL_SECONDS` | `60` | How often to poll the WebDAV share |
+| `MAX_BATCH_SIZE` | `8` | Max files per `easytranscriber` pipeline call (see Batching below) |
 | `TRANSCRIPTION_MODEL` | `"KBLab/kb-whisper-large"` | HuggingFace model ID for transcription |
 | `EMISSIONS_MODEL` | `"KBLab/kb-wav2vec2-large"` | HuggingFace model ID for emission |
 | `VAD_MODEL` | `"silero"` | Voice activity detection: `silero` or `pyannote` |
@@ -162,17 +163,25 @@ uv run whisperwebdav
 ```
 poll loop (watcher.py)
   └─ list WebDAV files (webdav.py)
-       └─ for each new file:
-            ├─ download audio
-            ├─ transcribe (transcriber.py)
-            │    └─ easytranscriber pipeline
-            ├─ format output (formatter.py)
-            ├─ upload results (webdav.py)
-            ├─ create .done marker (webdav.py)
-            └─ send notification (notifier.py)
+       └─ chunk new files into batches of MAX_BATCH_SIZE
+            └─ for each batch:
+                 ├─ download audio (per file)
+                 ├─ transcribe_batch (transcriber.py)
+                 │    └─ single easytranscriber pipeline call
+                 └─ for each transcribed file:
+                      ├─ format output (formatter.py)
+                      ├─ upload results (webdav.py)
+                      ├─ create .done marker (webdav.py)
+                      └─ send notification (notifier.py)
 ```
 
 Config is loaded at startup from environment variables via `pydantic-settings`. Structured logging uses `structlog` with optional JSON output for log aggregation.
+
+### Batching
+
+When a poll cycle finds multiple unprocessed files, they are transcribed together in a single `easytranscriber` pipeline call (up to `MAX_BATCH_SIZE` per call). This amortizes model warm-up and lets `easytranscriber` parallel-prefetch audio across the batch.
+
+Failures are isolated per file: a download or upload error for one file does not block the rest of the batch. If the transcription call itself fails, every file in that batch is reported as failed and retried on the next poll (no `.done` marker is written).
 
 ## License
 

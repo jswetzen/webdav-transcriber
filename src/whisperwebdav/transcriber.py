@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -12,6 +13,23 @@ from .config import Config
 class BatchTranscriptionResult:
     segments_by_path: dict[str, list]
     workspace: Path
+
+
+def release_gpu_memory() -> None:
+    """Drop dead Python refs and return cached CUDA blocks to the driver.
+
+    PyTorch's caching allocator holds freed VRAM in reserved blocks that other
+    processes can't allocate. Call this between batches and on idle ticks so a
+    co-located process (e.g. an LLM) can claim the GPU when we're not working.
+    """
+    gc.collect()
+    try:
+        import torch
+    except ImportError:
+        return
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
 
 
 def transcribe_batch(
@@ -81,3 +99,5 @@ def transcribe_batch(
     except Exception:
         shutil.rmtree(workspace, ignore_errors=True)
         raise
+    finally:
+        release_gpu_memory()

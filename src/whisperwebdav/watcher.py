@@ -11,7 +11,7 @@ import structlog
 from .config import Config
 from .formatter import FORMAT_EXTENSIONS, format_output
 from .notifier import Notifier
-from .transcriber import BatchTranscriptionResult, transcribe_batch
+from .transcriber import BatchTranscriptionResult, release_gpu_memory, transcribe_batch
 from .webdav import WebDAVClient
 
 log = structlog.get_logger(__name__)
@@ -136,8 +136,11 @@ def process_batch(
         shutil.rmtree(download_dir, ignore_errors=True)
 
 
-def poll(webdav: WebDAVClient, config: Config, notifier: Notifier) -> None:
-    """Poll the WebDAV share for new audio files and process them in batches."""
+def poll(webdav: WebDAVClient, config: Config, notifier: Notifier) -> bool:
+    """Poll the WebDAV share for new audio files and process them in batches.
+
+    Returns True if any work was done this cycle, False otherwise.
+    """
     audio_files = webdav.list_audio_files()
     log.debug("Poll cycle", file_count=len(audio_files))
 
@@ -149,7 +152,7 @@ def poll(webdav: WebDAVClient, config: Config, notifier: Notifier) -> None:
         pending.append(filename)
 
     if not pending:
-        return
+        return False
 
     batch_size = config.max_batch_size
     for start in range(0, len(pending), batch_size):
@@ -158,6 +161,7 @@ def poll(webdav: WebDAVClient, config: Config, notifier: Notifier) -> None:
             process_batch(chunk, webdav, config, notifier)
         except Exception:
             log.exception("Error processing batch, continuing", batch=chunk)
+    return True
 
 
 def main() -> None:
@@ -186,11 +190,29 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
 
+    last_work_at = time.monotonic()
+    gpu_released = False
+    idle_threshold = config.gpu_idle_release_seconds
+
     while running:
+        did_work = False
         try:
-            poll(webdav, config, notifier)
+            did_work = poll(webdav, config, notifier)
         except Exception:
             log.exception("Unexpected error in poll loop")
+
+        if did_work:
+            last_work_at = time.monotonic()
+            gpu_released = False
+        elif (
+            config.gpu_enabled
+            and not gpu_released
+            and idle_threshold > 0
+            and time.monotonic() - last_work_at >= idle_threshold
+        ):
+            log.info("Releasing idle GPU memory", idle_seconds=idle_threshold)
+            release_gpu_memory()
+            gpu_released = True
 
         # Sliced sleep for fast SIGTERM response
         for _ in range(config.poll_interval_seconds):

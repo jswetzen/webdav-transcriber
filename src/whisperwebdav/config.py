@@ -48,6 +48,7 @@ class Config(BaseSettings):
     language: str = "sv"
     cache_dir: str = "/app/models"
     gpu_enabled: bool = False
+    gpu_idle_release_seconds: int = 120
 
     # Output
     output_formats: str = "txt"

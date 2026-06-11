@@ -1,6 +1,11 @@
 # WhisperWebDAV
 
-A containerized daemon that polls a WebDAV share, transcribes audio files using [KBLab KB-Whisper](https://huggingface.co/KBLab) models via `easytranscriber`, uploads the results back to WebDAV, and sends notifications via [Apprise](https://github.com/caronc/apprise).
+Transcribes audio with [KBLab KB-Whisper](https://huggingface.co/KBLab) models via `easytranscriber`. It runs in two complementary modes from one image:
+
+- **`whisperwebdav-server`** — an OpenAI-compatible HTTP server (`POST /v1/audio/transcriptions`). It owns the model and is the single gate on the GPU (requests serialize through one in-process lock). Point any OpenAI-speaking client at it. This is the image's default command.
+- **`whisperwebdav`** — the WebDAV poll loop: watches a share, transcribes new audio, uploads results, and notifies via [Apprise](https://github.com/caronc/apprise). With `TRANSCRIBE_BACKEND=http` it becomes a thin client that offloads transcription to a server instance (so it needs no GPU); with the default `local` it transcribes in-process for standalone use.
+
+Co-locating the two as separate processes/containers means **one model load** shared by both the poll loop and any HTTP caller — see [`docker-compose.yaml`](docker-compose.yaml).
 
 ## Quick Start
 
@@ -18,7 +23,12 @@ All configuration is done via environment variables (or a `.env` file).
 
 | Variable | Default | Description |
 |---|---|---|
-| `WEBDAV_URL` | *(required)* | Base URL of the WebDAV server |
+| `TRANSCRIBE_BACKEND` | `"local"` | Poll loop only: `local` transcribes in-process, `http` offloads to a server |
+| `TRANSCRIBE_SERVER_URL` | `""` | Required when `TRANSCRIBE_BACKEND=http` (e.g. `http://whisper-server:8000`) |
+| `API_KEY` | `""` | Optional bearer key. Server requires it on requests when set; http client sends it |
+| `SERVER_HOST` | `"0.0.0.0"` | Server bind host (`whisperwebdav-server` only) |
+| `SERVER_PORT` | `8000` | Server bind port (`whisperwebdav-server` only) |
+| `WEBDAV_URL` | *(required for poll loop)* | Base URL of the WebDAV server (unused by the server) |
 | `WEBDAV_USERNAME` | `""` | WebDAV username (use with `WEBDAV_PASSWORD`) |
 | `WEBDAV_PASSWORD` | `""` | WebDAV password |
 | `WEBDAV_TOKEN` | `""` | Bearer token (alternative to username/password) |
@@ -48,6 +58,7 @@ All configuration is done via environment variables (or a `.env` file).
 |---|---|---|
 | `txt` | `.txt` | Plain text, one segment per line |
 | `srt` | `.srt` | SubRip subtitle format with timestamps |
+| `vtt` | `.vtt` | WebVTT subtitle format with timestamps |
 | `json` | `.json` | Raw alignment JSON with word-level timestamps |
 | `timestamps` | `.txt` | `[HH:MM:SS] text` per segment |
 
@@ -55,26 +66,33 @@ Set `OUTPUT_FORMATS=txt,srt` for multiple formats. Output files are named `<stem
 
 Files are marked as processed by creating a `<stem>.done` sidecar file on the WebDAV share. If processing fails, no `.done` file is created and the file will be retried on the next poll cycle.
 
+## OpenAI-compatible server
+
+`whisperwebdav-server` exposes the [OpenAI Audio API](https://platform.openai.com/docs/api-reference/audio/createTranscription) shape:
+
+```bash
+curl http://localhost:8000/v1/audio/transcriptions \
+  -H "Authorization: Bearer $API_KEY" \   # only if API_KEY is set
+  -F file=@note.m4a \
+  -F response_format=srt
+```
+
+Endpoints: `POST /v1/audio/transcriptions`, `GET /v1/models`, `GET /healthz`.
+
+`response_format` selects the rendering:
+
+| Value | Returns |
+|---|---|
+| `json` *(default)* | `{"text": "..."}` |
+| `text` | plain transcript text |
+| `verbose_json` | `{task, language, duration, text, segments[]}` with per-segment timestamps |
+| `srt` / `vtt` | subtitle text with timestamps |
+
+The form fields `model` and `temperature` are accepted for client compatibility; `language` overrides the server's configured language per request.
+
 ## Docker Compose
 
-```yaml
-services:
-  whisperwebdav:
-    image: ghcr.io/your-org/whisperwebdav:latest
-    restart: unless-stopped
-    environment:
-      WEBDAV_URL: "https://nextcloud.example.com/remote.php/dav/files/user"
-      WEBDAV_USERNAME: "user"
-      WEBDAV_PASSWORD: "password"
-      WEBDAV_WATCH_PATH: "/recordings"
-      LANGUAGE: "sv"
-      OUTPUT_FORMATS: "txt,srt"
-    volumes:
-      - model-cache:/app/models
-
-volumes:
-  model-cache:
-```
+See [`docker-compose.yaml`](docker-compose.yaml) for a two-service setup: `whisper-server` (the model owner / OpenAI endpoint) and an optional `whisper-poller` (WebDAV poll loop in `http` mode). Run only the server if you just want the endpoint.
 
 ## GPU Support
 
@@ -155,7 +173,8 @@ docker build -t whisperwebdav:local .
 ```bash
 cp .env.example .env
 # Edit .env with your settings
-uv run whisperwebdav
+uv run whisperwebdav-server   # OpenAI endpoint on :8000
+uv run whisperwebdav          # WebDAV poll loop
 ```
 
 ## Architecture

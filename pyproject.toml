@@ -16,10 +16,15 @@ dependencies = [
     "apprise",
     "pydantic-settings",
     "structlog",
+    "fastapi",
+    "uvicorn[standard]",
+    "python-multipart",
+    "httpx",
 ]
 
 [project.scripts]
 whisperwebdav = "whisperwebdav.watcher:main"
+whisperwebdav-server = "whisperwebdav.server:main"
 
 [dependency-groups]
 dev = [

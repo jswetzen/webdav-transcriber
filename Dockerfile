@@ -50,4 +50,8 @@ ENV HOME=/home/appuser
 
 USER appuser
 
-ENTRYPOINT ["whisperwebdav"]
+EXPOSE 8000
+
+# Default to the model-owner OpenAI server. Run the WebDAV poll loop instead by overriding
+# the command to `whisperwebdav` (see docker-compose.yaml for both services).
+CMD ["whisperwebdav-server"]

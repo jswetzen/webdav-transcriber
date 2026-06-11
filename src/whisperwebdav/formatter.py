@@ -23,6 +23,11 @@ def _seconds_to_srt_time(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
+def _seconds_to_vtt_time(seconds: float) -> str:
+    """Convert seconds to WebVTT timestamp format HH:MM:SS.mmm (dot, not comma)."""
+    return _seconds_to_srt_time(seconds).replace(",", ".")
+
+
 def _seconds_to_timestamp(seconds: float) -> str:
     """Convert seconds to HH:MM:SS format (no milliseconds) using integer arithmetic."""
     total_s = int(seconds)
@@ -50,21 +55,45 @@ def to_srt(segments: Any) -> str:
     return "\n\n".join(blocks)
 
 
-def to_json(segments: Any) -> str:
-    """Raw alignment JSON (word-level timestamps)."""
-    data = []
+def normalize_segments(segments: Any) -> list[dict[str, Any]]:
+    """Coerce pipeline segments (objects or dicts) to plain {start, end, text} dicts.
+
+    Used by the server to build JSON responses and by the http client to re-render
+    locally; passing the dicts back through format_output works because _get handles them.
+    """
+    out: list[dict[str, Any]] = []
     for seg in segments:
         if isinstance(seg, dict):
-            data.append(seg)
+            out.append(seg)
         else:
-            data.append(
+            out.append(
                 {
                     "start": _get(seg, "start"),
                     "end": _get(seg, "end"),
                     "text": _get(seg, "text"),
                 }
             )
-    return json.dumps(data, ensure_ascii=False, indent=2)
+    return out
+
+
+def to_json(segments: Any) -> str:
+    """Raw alignment JSON (word-level timestamps)."""
+    return json.dumps(normalize_segments(segments), ensure_ascii=False, indent=2)
+
+
+def to_vtt(segments: Any) -> str:
+    """WebVTT: a WEBVTT header followed by HH:MM:SS.mmm --> HH:MM:SS.mmm cues."""
+    cues = []
+    for seg in segments:
+        start = _seconds_to_vtt_time(_get(seg, "start"))
+        end = _seconds_to_vtt_time(_get(seg, "end"))
+        cues.append(f"{start} --> {end}\n{_get(seg, 'text')}")
+    return "WEBVTT\n\n" + "\n\n".join(cues)
+
+
+def full_text(segments: Any) -> str:
+    """Whole-transcript text as a single space-joined string (OpenAI text/json `text` field)."""
+    return " ".join(_get(seg, "text").strip() for seg in segments).strip()
 
 
 def to_timestamps(segments: Any) -> str:
@@ -80,6 +109,7 @@ def to_timestamps(segments: Any) -> str:
 FORMAT_FUNCTIONS: dict[str, Any] = {
     "txt": to_txt,
     "srt": to_srt,
+    "vtt": to_vtt,
     "json": to_json,
     "timestamps": to_timestamps,
 }
@@ -87,6 +117,7 @@ FORMAT_FUNCTIONS: dict[str, Any] = {
 FORMAT_EXTENSIONS: dict[str, str] = {
     "txt": ".txt",
     "srt": ".srt",
+    "vtt": ".vtt",
     "json": ".json",
     "timestamps": ".txt",
 }

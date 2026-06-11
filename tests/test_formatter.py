@@ -7,10 +7,13 @@ import pytest
 from whisperwebdav.formatter import (
     _seconds_to_srt_time,
     format_output,
+    full_text,
+    normalize_segments,
     to_json,
     to_srt,
     to_timestamps,
     to_txt,
+    to_vtt,
 )
 
 
@@ -147,3 +150,51 @@ def test_format_output_timestamps(mock_segments):
 def test_format_output_unknown_raises():
     with pytest.raises(ValueError, match="Unknown format"):
         format_output([], "xml")
+
+
+# --- to_vtt ---
+
+
+def test_to_vtt_attribute_style(mock_segments):
+    result = to_vtt(mock_segments)
+    assert result.startswith("WEBVTT\n\n")
+    # dot, not comma, separates the milliseconds
+    assert "00:00:00.000 --> 00:00:03.500" in result
+    assert "00:00:04.000 --> 00:00:07.250" in result
+    assert "Hello world" in result
+
+
+def test_to_vtt_empty():
+    assert to_vtt([]) == "WEBVTT\n\n"
+
+
+# --- full_text ---
+
+
+def test_full_text_joins_with_space(mock_segments):
+    assert full_text(mock_segments) == "Hello world How are you"
+
+
+def test_full_text_strips_segment_whitespace():
+    segs = [{"start": 0.0, "end": 1.0, "text": "  padded "}, {"start": 1.0, "end": 2.0, "text": "tight"}]
+    assert full_text(segs) == "padded tight"
+
+
+def test_full_text_empty():
+    assert full_text([]) == ""
+
+
+# --- normalize_segments ---
+
+
+def test_normalize_segments_from_objects(mock_segments):
+    out = normalize_segments(mock_segments)
+    assert out == [
+        {"start": 0.0, "end": 3.5, "text": "Hello world"},
+        {"start": 4.0, "end": 7.25, "text": "How are you"},
+    ]
+
+
+def test_normalize_segments_passes_dicts_through():
+    segs = [{"start": 1.0, "end": 2.0, "text": "x", "words": [1, 2]}]
+    assert normalize_segments(segs)[0]["words"] == [1, 2]

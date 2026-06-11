@@ -8,6 +8,7 @@ from pathlib import Path
 
 import structlog
 
+from .client import transcribe_remote
 from .config import Config
 from .formatter import FORMAT_EXTENSIONS, format_output
 from .notifier import Notifier
@@ -109,19 +110,32 @@ def process_batch(
         if not local_paths:
             return
 
-        try:
-            result = transcribe_batch(local_paths, config)
-        except Exception as exc:
-            log.exception(
-                "Batch transcription failed",
-                batch_size=len(local_paths),
-                filenames=list(filename_by_local.values()),
-            )
-            for filename in filename_by_local.values():
-                notifier.notify_failure(filename, exc)
-            return
+        segments_by_path: dict[str, list] = {}
+        if config.transcribe_backend == "http":
+            # Thin-client mode: offload each file to the model-owner server. Per-file isolation
+            # — one failed request doesn't sink the rest of the batch.
+            for local_path in local_paths:
+                filename = filename_by_local[local_path]
+                try:
+                    segments_by_path[local_path] = transcribe_remote(local_path, config)
+                except Exception as exc:
+                    log.exception("Remote transcription failed", filename=filename)
+                    notifier.notify_failure(filename, exc)
+        else:
+            try:
+                result = transcribe_batch(local_paths, config)
+            except Exception as exc:
+                log.exception(
+                    "Batch transcription failed",
+                    batch_size=len(local_paths),
+                    filenames=list(filename_by_local.values()),
+                )
+                for filename in filename_by_local.values():
+                    notifier.notify_failure(filename, exc)
+                return
+            segments_by_path = result.segments_by_path
 
-        for local_path, segments in result.segments_by_path.items():
+        for local_path, segments in segments_by_path.items():
             filename = filename_by_local[local_path]
             try:
                 _publish_results(filename, segments, webdav, config, notifier)
@@ -168,12 +182,16 @@ def main() -> None:
     config = Config()
     _configure_logging(config)
 
+    if not config.webdav_url:
+        raise SystemExit("WEBDAV_URL is required to run the poll loop")
+
     log.info(
         "Starting WhisperWebDAV",
         webdav_url=config.webdav_url,
         watch_path=config.webdav_watch_path,
         poll_interval=config.poll_interval_seconds,
         max_batch_size=config.max_batch_size,
+        backend=config.transcribe_backend,
         model=config.transcription_model,
     )
 

@@ -21,15 +21,16 @@ COPY src/ ./src/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-editable
 
-# CTranslate2 dlopens libcublas.so.12/libcudnn.so.9 on GPU. Wheels provide
-# these on x86_64 only; arm64 is CPU-only. libcuda.so.1 is injected at
-# runtime by NVIDIA Container Toolkit (--gpus all) or bind-mounted manually.
+# Extra CUDA libs the wheels don't otherwise pull (x86_64 only; arm64 is CPU-only):
+#   - CTranslate2 dlopens libcublas.so.12 / libcudnn.so.9 (CUDA 12).
+#   - torchcodec (torchaudio's decode backend) NEEDs CUDA-13 NPP (libnppicc.so.13 et al.),
+#     which is not a torch dependency, so it must be installed explicitly.
+# libcuda.so.1 is still injected at runtime (NVIDIA Container Toolkit or bind-mount).
+# NOTE: discovery (ldconfig) is done in the FINAL stage — an ld.so.conf written here would be
+# dropped by the `COPY --from=builder /app/.venv` and never reach the runtime image.
 RUN if [ "$(uname -m)" = "x86_64" ]; then \
     uv pip install --python /app/.venv/bin/python --no-deps \
-        nvidia-cublas-cu12 nvidia-cudnn-cu12 && \
-    echo "/app/.venv/lib/python3.14/site-packages/nvidia/cublas/lib"  > /etc/ld.so.conf.d/cuda12-extras.conf && \
-    echo "/app/.venv/lib/python3.14/site-packages/nvidia/cudnn/lib" >> /etc/ld.so.conf.d/cuda12-extras.conf && \
-    ldconfig; fi
+        nvidia-cublas-cu12 nvidia-cudnn-cu12 nvidia-npp-cu13; fi
 
 
 # Stage 2: final runtime image
@@ -42,6 +43,13 @@ RUN groupadd --system appuser && useradd --system --gid appuser appuser
 RUN mkdir -p /home/appuser && chown appuser:appuser /home/appuser
 
 COPY --from=builder /app/.venv /app/.venv
+
+# Put every CUDA lib that ships inside the copied venv onto the system loader path. torch loads
+# its own libs via RUNPATH, but standalone extensions resolve NEEDED libs through the system
+# search path — without this, torchcodec can't find libnppicc.so.13 and CTranslate2 can't find
+# libcublas.so.12 (the builder-stage ld.so.conf does not survive the COPY above). One ldconfig
+# covers cublas/cudnn (CTranslate2), npp (torchcodec), and torch's cu13 runtime libs.
+RUN find /app/.venv -type d -path '*/nvidia/*/lib' > /etc/ld.so.conf.d/nvidia-venv.conf && ldconfig
 
 RUN mkdir /app/models && chown appuser:appuser /app/models
 

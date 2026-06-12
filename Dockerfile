@@ -24,13 +24,15 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # Extra CUDA libs the wheels don't otherwise pull (x86_64 only; arm64 is CPU-only):
 #   - CTranslate2 dlopens libcublas.so.12 / libcudnn.so.9 (CUDA 12).
 #   - torchcodec (torchaudio's decode backend) NEEDs CUDA-13 NPP (libnppicc.so.13 et al.),
-#     which is not a torch dependency, so it must be installed explicitly.
+#     which is not a torch dependency, so it must be installed explicitly. Use the unsuffixed
+#     `nvidia-npp` wheel — it's the CUDA-13 build (matching torch's unsuffixed nvidia-* cu13
+#     deps); the `nvidia-npp-cu13` name is a deprecated stub that fails to build.
 # libcuda.so.1 is still injected at runtime (NVIDIA Container Toolkit or bind-mount).
 # NOTE: discovery (ldconfig) is done in the FINAL stage — an ld.so.conf written here would be
 # dropped by the `COPY --from=builder /app/.venv` and never reach the runtime image.
 RUN if [ "$(uname -m)" = "x86_64" ]; then \
     uv pip install --python /app/.venv/bin/python --no-deps \
-        nvidia-cublas-cu12 nvidia-cudnn-cu12 nvidia-npp-cu13; fi
+        nvidia-cublas-cu12 nvidia-cudnn-cu12 nvidia-npp; fi
 
 
 # Stage 2: final runtime image

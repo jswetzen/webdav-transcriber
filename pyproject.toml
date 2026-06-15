@@ -25,6 +25,7 @@ dependencies = [
 [project.scripts]
 whisperwebdav = "whisperwebdav.watcher:main"
 whisperwebdav-server = "whisperwebdav.server:main"
+whisperwebdav-healthcheck = "whisperwebdav.healthcheck:main"
 
 [dependency-groups]
 dev = [

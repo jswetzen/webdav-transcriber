@@ -28,6 +28,15 @@ class WebDAVClient:
 
         self._client = Client(options)
 
+    def check_connection(self) -> None:
+        """List the watch path, raising on any failure (auth, network, missing path).
+
+        Unlike list_audio_files (which swallows and returns [] to keep the poll loop
+        alive through transient blips), this propagates: it backs the healthcheck
+        probe, where a raised exception is the unhealthy signal.
+        """
+        self._client.list(self._watch_path)
+
     def list_audio_files(self) -> list[str]:
         """List audio files in the watch path. Returns [] on error."""
         try:

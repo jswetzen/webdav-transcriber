@@ -2,7 +2,7 @@
 
 Transcribes audio with [KBLab KB-Whisper](https://huggingface.co/KBLab) models via `easytranscriber`. It runs in two complementary modes from one image:
 
-- **`whisperwebdav-server`** — an OpenAI-compatible HTTP server (`POST /v1/audio/transcriptions`). It owns the model and is the single gate on the GPU (requests serialize through one in-process lock). Point any OpenAI-speaking client at it. This is the image's default command.
+- **`whisperwebdav-server`** — an OpenAI-compatible HTTP server: `POST /v1/audio/transcriptions` (KB-Whisper) and `POST /v1/audio/speech` (Kokoro TTS, see [below](#text-to-speech-kokoro)). It owns both models and is the single gate on the GPU (requests serialize through one in-process lock, shared by both). Point any OpenAI-speaking client at it. This is the image's default command.
 - **`whisperwebdav`** — the WebDAV poll loop: watches a share, transcribes new audio, uploads results, and notifies via [Apprise](https://github.com/caronc/apprise). With `TRANSCRIBE_BACKEND=http` it becomes a thin client that offloads transcription to a server instance (so it needs no GPU); with the default `local` it transcribes in-process for standalone use.
 
 Co-locating the two as separate processes/containers means **one model load** shared by both the poll loop and any HTTP caller — see [`docker-compose.yaml`](docker-compose.yaml).
@@ -47,6 +47,11 @@ All configuration is done via environment variables (or a `.env` file).
 | `APPRISE_URLS` | `""` | Comma-separated Apprise notification URLs |
 | `LOG_LEVEL` | `"INFO"` | Logging level: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `LOG_FORMAT` | `"plain"` | Log format: `plain` or `json` |
+| `KOKORO_MODEL_PATH` | `"/app/models/kokoro-v1.0.onnx"` | Path to the Kokoro ONNX model (see [Text-to-speech](#text-to-speech-kokoro)) |
+| `KOKORO_VOICES_PATH` | `"/app/models/voices-v1.0.bin"` | Path to the Kokoro voice bank |
+| `TTS_DEFAULT_VOICE` | `"af_sarah"` | Voice used when a request omits `voice` |
+| `TTS_LANG` | `"en-us"` | Kokoro phonemizer language (not exposed via the API — OpenAI's TTS request has no `lang` field) |
+| `TTS_MAX_INPUT_CHARS` | `5000` | Reject `/v1/audio/speech` requests with longer `input` |
 
 ### Supported Languages
 
@@ -77,7 +82,7 @@ curl http://localhost:8000/v1/audio/transcriptions \
   -F response_format=srt
 ```
 
-Endpoints: `POST /v1/audio/transcriptions`, `GET /v1/models`, `GET /healthz`.
+Endpoints: `POST /v1/audio/transcriptions`, `POST /v1/audio/speech`, `GET /v1/models`, `GET /healthz`.
 
 `response_format` selects the rendering:
 
@@ -89,6 +94,35 @@ Endpoints: `POST /v1/audio/transcriptions`, `GET /v1/models`, `GET /healthz`.
 | `srt` / `vtt` | subtitle text with timestamps |
 
 The form fields `model` and `temperature` are accepted for client compatibility; `language` overrides the server's configured language per request.
+
+## Text-to-speech (Kokoro)
+
+`whisperwebdav-server` also exposes the [OpenAI TTS API](https://platform.openai.com/docs/api-reference/audio/createSpeech) shape, backed by [`kokoro-onnx`](https://github.com/thewh1teagle/kokoro-onnx):
+
+```bash
+curl http://localhost:8000/v1/audio/speech \
+  -H "Authorization: Bearer $API_KEY" \   # only if API_KEY is set
+  -H "Content-Type: application/json" \
+  -d '{"input": "Hello from Kokoro", "voice": "af_sarah", "response_format": "wav"}' \
+  -o speech.wav
+```
+
+Unlike `/v1/audio/transcriptions`, this endpoint takes a JSON body (`model`, `input`, `voice`, `response_format`), matching OpenAI's own request shape. `response_format` is `wav` (default) or `mp3` (transcoded through the `ffmpeg` already bundled for Whisper's input demuxing). `GET /v1/models` lists available voices under a `voices` key once the model files below are present, and warms the model on first call.
+
+### Model files
+
+kokoro-onnx doesn't fetch its own weights from a package index — download the two release assets once and place them where `KOKORO_MODEL_PATH` / `KOKORO_VOICES_PATH` point (the model-cache volume by default, alongside the Whisper cache):
+
+```bash
+wget -P ./models https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1/kokoro-v1.0.onnx
+wget -P ./models https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1/voices-v1.0.bin
+```
+
+Until both files exist, `/v1/audio/speech` returns `400` and `/v1/models` simply omits the `kokoro` entry — the rest of the server (transcription) is unaffected. Voice names come from the voice bank itself (`kokoro.get_voices()`); see [Kokoro-82M/VOICES.md](https://huggingface.co/hexgrad/Kokoro-82M/blob/main/VOICES.md) for what's in the v1.0 release.
+
+GPU inference is automatic when `GPU_ENABLED=true`: ONNX Runtime picks up `CUDAExecutionProvider` on its own once `onnxruntime-gpu` is installed (the Docker image does this for x86_64 builds, reusing the CUDA 12 / cuDNN 9 libraries already staged for Whisper — see the Dockerfile). No separate synthesis queue exists: Kokoro synthesis and Whisper transcription share the same process-global GPU lock used for transcription, so the two never run concurrently on one card.
+
+**Not implemented (deliberately out of scope for this pass):** true incremental audio streaming (Kokoro synthesizes the full utterance before this returns it — `create_stream()` exists upstream but isn't wired up here), response caching, Prometheus metrics (no metrics infra exists in this service yet), and a generic per-request timeout middleware. `TTS_MAX_INPUT_CHARS` is the only guard against oversized/slow requests today.
 
 ## Docker Compose
 

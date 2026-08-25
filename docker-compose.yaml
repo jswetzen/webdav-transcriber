@@ -25,6 +25,13 @@ services:
       CACHE_DIR: "/app/models"
       GPU_ENABLED: "false"     # set "true" + a GPU block below
       LOG_LEVEL: "INFO"
+
+      # Text-to-speech (Kokoro). Model files aren't auto-downloaded (see README) — fetch
+      # kokoro-v1.0.onnx and voices-v1.0.bin into the model-cache volume once before /v1/models
+      # will advertise the "kokoro" model or /v1/audio/speech will work.
+      KOKORO_MODEL_PATH: "/app/models/kokoro-v1.0.onnx"
+      KOKORO_VOICES_PATH: "/app/models/voices-v1.0.bin"
+      TTS_DEFAULT_VOICE: "af_sarah"
     volumes:
       - model-cache:/app/models
       # GPU path B (Podman / bare LXC) — uncomment with the devices block below:

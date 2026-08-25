@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from whisperwebdav.config import Config
 from whisperwebdav.server import create_app
+from whisperwebdav.tts import SynthesisResult, TTSError
 
 FAKE_SEGMENTS = [
     {"start": 0.0, "end": 3.5, "text": "Hello world"},
@@ -117,3 +118,119 @@ def test_auth_required_when_key_set(monkeypatch: pytest.MonkeyPatch) -> None:
         headers={"Authorization": "Bearer secret"},
     )
     assert ok.status_code == 200
+
+
+# --- text-to-speech ---
+
+
+@pytest.fixture
+def tts_client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
+    monkeypatch.setattr(
+        "whisperwebdav.server.kokoro_files_present", lambda config: True
+    )
+    monkeypatch.setattr(
+        "whisperwebdav.server.available_voices",
+        lambda config: frozenset({"af_sarah", "af_sky"}),
+    )
+    return TestClient(create_app(Config()))
+
+
+def test_speech_default_wav(monkeypatch: pytest.MonkeyPatch, tts_client: TestClient) -> None:
+    captured = {}
+
+    def fake_synthesize(text, config, *, voice="", response_format="wav"):
+        captured["text"] = text
+        captured["voice"] = voice
+        captured["response_format"] = response_format
+        return SynthesisResult(audio=b"RIFF-fake-wav", media_type="audio/wav", duration_seconds=1.5)
+
+    monkeypatch.setattr("whisperwebdav.server.synthesize", fake_synthesize)
+
+    resp = tts_client.post("/v1/audio/speech", json={"input": "Hello there"})
+    assert resp.status_code == 200
+    assert resp.content == b"RIFF-fake-wav"
+    assert resp.headers["content-type"] == "audio/wav"
+    assert captured == {"text": "Hello there", "voice": "", "response_format": "wav"}
+
+
+def test_speech_mp3_and_voice_passed_through(
+    monkeypatch: pytest.MonkeyPatch, tts_client: TestClient
+) -> None:
+    monkeypatch.setattr(
+        "whisperwebdav.server.synthesize",
+        lambda text, config, *, voice="", response_format="wav": SynthesisResult(
+            audio=b"id3-fake-mp3", media_type="audio/mpeg", duration_seconds=1.5
+        ),
+    )
+    resp = tts_client.post(
+        "/v1/audio/speech",
+        json={"input": "Hej", "voice": "af_sky", "response_format": "mp3"},
+    )
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "audio/mpeg"
+
+
+def test_speech_empty_input_rejected(tts_client: TestClient) -> None:
+    resp = tts_client.post("/v1/audio/speech", json={"input": "   "})
+    assert resp.status_code == 400
+
+
+def test_speech_input_too_long_rejected(tts_client: TestClient) -> None:
+    c = TestClient(create_app(Config(tts_max_input_chars=10)))
+    resp = c.post("/v1/audio/speech", json={"input": "x" * 11})
+    assert resp.status_code == 400
+
+
+def test_speech_tts_error_returns_400(
+    monkeypatch: pytest.MonkeyPatch, tts_client: TestClient
+) -> None:
+    def raising(text, config, *, voice="", response_format="wav"):
+        raise TTSError("Unknown voice 'bogus'")
+
+    monkeypatch.setattr("whisperwebdav.server.synthesize", raising)
+    resp = tts_client.post("/v1/audio/speech", json={"input": "hi", "voice": "bogus"})
+    assert resp.status_code == 400
+    assert "bogus" in resp.json()["detail"]
+
+
+def test_speech_auth_required_when_key_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "whisperwebdav.server.kokoro_files_present", lambda config: True
+    )
+    monkeypatch.setattr(
+        "whisperwebdav.server.available_voices", lambda config: frozenset({"af_sarah"})
+    )
+    monkeypatch.setattr(
+        "whisperwebdav.server.synthesize",
+        lambda text, config, *, voice="", response_format="wav": SynthesisResult(
+            audio=b"x", media_type="audio/wav", duration_seconds=0.1
+        ),
+    )
+    c = TestClient(create_app(Config(api_key="secret")))
+    assert c.post("/v1/audio/speech", json={"input": "hi"}).status_code == 401
+    ok = c.post(
+        "/v1/audio/speech",
+        json={"input": "hi"},
+        headers={"Authorization": "Bearer secret"},
+    )
+    assert ok.status_code == 200
+
+
+def test_list_models_includes_kokoro_when_files_present(
+    monkeypatch: pytest.MonkeyPatch, tts_client: TestClient
+) -> None:
+    resp = tts_client.get("/v1/models")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert {"id": "kokoro", "object": "model", "owned_by": "kokoro-onnx"} in body["data"]
+    assert body["voices"] == ["af_sarah", "af_sky"]
+
+
+def test_list_models_omits_kokoro_when_files_absent(client: TestClient) -> None:
+    # `client` fixture uses a stock Config; kokoro_files_present() will be False since no
+    # model files exist at the default paths in the test environment.
+    resp = client.get("/v1/models")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert all(m["id"] != "kokoro" for m in body["data"])
+    assert body["voices"] == []

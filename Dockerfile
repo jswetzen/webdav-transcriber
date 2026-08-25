@@ -27,12 +27,17 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 #     which is not a torch dependency, so it must be installed explicitly. Use the unsuffixed
 #     `nvidia-npp` wheel — it's the CUDA-13 build (matching torch's unsuffixed nvidia-* cu13
 #     deps); the `nvidia-npp-cu13` name is a deprecated stub that fails to build.
-# libcuda.so.1 is still injected at runtime (NVIDIA Container Toolkit or bind-mount).
-# NOTE: discovery (ldconfig) is done in the FINAL stage — an ld.so.conf written here would be
-# dropped by the `COPY --from=builder /app/.venv` and never reach the runtime image.
+#   - onnxruntime-gpu replaces plain `onnxruntime` (a transitive dep of kokoro-onnx, CPU-only)
+#     so ONNX Runtime's default session picks up CUDAExecutionProvider automatically — see
+#     tts.py. Both wheels install into the same `onnxruntime/` import path; installing this
+#     second and `--no-deps` overwrites those files in place rather than leaving two conflicting
+#     packages registered, same trick as the CTranslate2/torchcodec libs above. It links against
+#     CUDA 12 / cuDNN 9, matching the cublas/cudnn wheels already installed here — if a future
+#     onnxruntime-gpu release needs a newer cuDNN, this line and the cudnn one above must move
+#     together.
 RUN if [ "$(uname -m)" = "x86_64" ]; then \
     uv pip install --python /app/.venv/bin/python --no-deps \
-        nvidia-cublas-cu12 nvidia-cudnn-cu12 nvidia-npp; fi
+        nvidia-cublas-cu12 nvidia-cudnn-cu12 nvidia-npp onnxruntime-gpu; fi
 
 
 # Stage 2: final runtime image

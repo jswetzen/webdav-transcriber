@@ -64,6 +64,16 @@ class Config(BaseSettings):
     gpu_enabled: bool = False
     gpu_idle_release_seconds: int = 120
 
+    # Text-to-speech (Kokoro), see tts.py. Model files aren't published on an index kokoro-onnx
+    # can fetch itself — download kokoro-v1.0.onnx / voices-v1.0.bin from
+    # https://github.com/thewh1teagle/kokoro-onnx/releases and place them at these paths
+    # (cache_dir by default, so they share the model-cache volume with Whisper).
+    kokoro_model_path: str = "/app/models/kokoro-v1.0.onnx"
+    kokoro_voices_path: str = "/app/models/voices-v1.0.bin"
+    tts_default_voice: str = "af_sarah"
+    tts_lang: str = "en-us"
+    tts_max_input_chars: int = 5000
+
     # Output
     output_formats: str = "txt"
     output_subdir: str = ""

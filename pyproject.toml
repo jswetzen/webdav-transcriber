@@ -20,6 +20,8 @@ dependencies = [
     "uvicorn[standard]",
     "python-multipart",
     "httpx",
+    "kokoro-onnx",
+    "soundfile",
 ]
 
 [project.scripts]

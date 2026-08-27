@@ -189,11 +189,10 @@ async def _stream_pcm_to_mp3(
     """Pipe float32 PCM chunks through one persistent ffmpeg process, yielding mp3 bytes as
     they become available, rather than _wav_to_mp3's one subprocess.run() per whole buffer.
     ffmpeg is started lazily on the first chunk (it needs -ar up front, which we only learn
-    from kokoro's first (samples, sample_rate) tuple — every chunk shares one rate in practice).
+    from kokoro's first (samples, sample_rate) tuple — every chunk shares one rate in practice)
+    -- also means text that produces zero chunks (e.g. trims to nothing) never touches ffmpeg
+    at all, so its absence isn't an error for that case.
     """
-    if shutil.which("ffmpeg") is None:
-        raise TTSError("mp3 output requires ffmpeg, which is not installed in this image")
-
     proc: asyncio.subprocess.Process | None = None
     stdout_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
 
@@ -209,6 +208,10 @@ async def _stream_pcm_to_mp3(
     try:
         async for samples, sample_rate in pcm_chunks:
             if proc is None:
+                if shutil.which("ffmpeg") is None:
+                    raise TTSError(
+                        "mp3 output requires ffmpeg, which is not installed in this image"
+                    )
                 proc = await asyncio.create_subprocess_exec(
                     "ffmpeg",
                     "-hide_banner",

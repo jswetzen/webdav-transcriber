@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 
 import pytest
 
 from whisperwebdav.config import Config
 from whisperwebdav import tts
+
+# The real webdav-transcriber image always has ffmpeg (Dockerfile installs it for Whisper's
+# input demuxing too, see tts.py's _wav_to_mp3 docstring), but a bare CI/dev Python env may
+# not -- skip rather than fail so `pytest` still passes without it installed.
+requires_ffmpeg = pytest.mark.skipif(
+    shutil.which("ffmpeg") is None, reason="ffmpeg not installed"
+)
 
 
 def _model_files(tmp_path):
@@ -163,6 +171,7 @@ def test_synthesize_stream_unknown_voice_raises(
     tts.GPU_LOCK.release()
 
 
+@requires_ffmpeg
 def test_synthesize_stream_yields_mp3_bytes(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     model, voices = _model_files(tmp_path)
     config = Config(kokoro_model_path=str(model), kokoro_voices_path=str(voices))

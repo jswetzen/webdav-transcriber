@@ -133,12 +133,14 @@ def synthesize(
 async def synthesize_stream(
     text: str, config: Config, *, voice: str = "", response_format: str = "mp3"
 ) -> AsyncGenerator[bytes, None]:
-    """Async counterpart to synthesize(): yields mp3 bytes as kokoro-onnx's create_stream()
+    """Async counterpart to synthesize(): yields audio bytes as kokoro-onnx's create_stream()
     produces them, sentence/clause-chunked internally (see its docstring), instead of
-    buffering the whole utterance like synthesize() does. wav is deliberately unsupported here
-    — a valid WAV header wants a known total sample count up front, which a live stream can't
-    supply — so callers must request response_format="mp3"; server.py enforces that before
-    calling in.
+    buffering the whole utterance like synthesize() does. Supports "mp3" and "pcm"; wav is
+    deliberately unsupported — a valid WAV header wants a known total sample count up front,
+    which a live stream can't supply. "pcm" means raw s16le mono samples at kokoro's own
+    output rate (24kHz), no container at all — the format OpenAI-compatible streaming TTS
+    clients (e.g. the customtts Firefox extension) request for low-latency playback via
+    Web Audio, and the cheaper of the two here since it skips ffmpeg entirely.
 
     Validation (bad format, missing model files, unknown voice) all happens as plain sync code
     before the first `yield` below, so it raises TTSError out of the FIRST `anext()` on this
@@ -159,10 +161,10 @@ async def synthesize_stream(
     not an accident of this implementation.
     """
     response_format = response_format or "mp3"
-    if response_format != "mp3":
+    if response_format not in ("mp3", "pcm"):
         raise TTSError(
-            f"Streaming only supports response_format='mp3' (wav needs a known length "
-            f"up front); got '{response_format}'."
+            f"Streaming only supports response_format='mp3' or 'pcm' (wav needs a known "
+            f"length up front); got '{response_format}'."
         )
 
     voice = voice or config.tts_default_voice
@@ -177,10 +179,26 @@ async def synthesize_stream(
         log.info("Streaming speech", chars=len(text), voice=voice, format=response_format)
 
         chunks = kokoro.create_stream(text, voice=voice, speed=1.0, lang=config.tts_lang)
-        async for mp3_bytes in _stream_pcm_to_mp3(chunks):
-            yield mp3_bytes
+        encode = _stream_pcm_to_mp3 if response_format == "mp3" else _stream_pcm_to_s16le
+        async for audio_bytes in encode(chunks):
+            yield audio_bytes
     finally:
         GPU_LOCK.release()
+
+
+async def _stream_pcm_to_s16le(
+    pcm_chunks: AsyncGenerator[tuple, None],
+) -> AsyncGenerator[bytes, None]:
+    """Convert each (float32 samples, sample_rate) chunk straight to raw little-endian int16
+    bytes and yield it -- no subprocess, no container framing, so there's nothing to buffer:
+    every chunk kokoro produces goes out as soon as it's converted. sample_rate is passed
+    through unused (kokoro-onnx's own SAMPLE_RATE is fixed at 24kHz; a caller expecting raw
+    PCM is expected to already know the rate out of band, same as the customtts extension's
+    hardcoded PCM_SAMPLE_RATE — there's no room in a headerless format to say it inline).
+    """
+    async for samples, _sample_rate in pcm_chunks:
+        clipped = np.clip(np.asarray(samples, dtype=np.float32), -1.0, 1.0)
+        yield (clipped * 32767.0).astype("<i2").tobytes()
 
 
 async def _stream_pcm_to_mp3(

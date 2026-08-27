@@ -202,3 +202,46 @@ def test_synthesize_stream_empty_chunks_yields_nothing(
     assert audio == b""
     assert tts.GPU_LOCK.acquire(blocking=False)
     tts.GPU_LOCK.release()
+
+
+def test_synthesize_stream_pcm_yields_raw_s16le(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    # Two chunks of known float32 samples; no ffmpeg needed for pcm at all, so this runs
+    # everywhere -- unlike the mp3 path, verifiable exactly rather than just "looks like mp3".
+    model, voices = _model_files(tmp_path)
+    config = Config(kokoro_model_path=str(model), kokoro_voices_path=str(voices))
+
+    fake = FakeKokoro(stream_chunks=[([0.0, 0.5, -1.0, 1.0], 24000), ([-0.5], 24000)])
+    monkeypatch.setattr(tts, "_load_kokoro", lambda cfg: fake)
+
+    audio = asyncio.run(
+        _drain(tts.synthesize_stream("hi there", config, voice="af_sky", response_format="pcm"))
+    )
+
+    import numpy as np
+
+    samples = np.frombuffer(audio, dtype="<i2")
+    # 32767, not 32768, so exact equality on the +1.0 sample would be off by one; approx covers
+    # the intentional clamp-to-int16-range rounding for every value here.
+    np.testing.assert_allclose(
+        samples / 32767.0, [0.0, 0.5, -1.0, 1.0, -0.5], atol=1e-4
+    )
+    assert fake.stream_calls == [("hi there", "af_sky", 1.0, config.tts_lang)]
+    assert tts.GPU_LOCK.acquire(blocking=False)
+    tts.GPU_LOCK.release()
+
+
+def test_synthesize_stream_rejects_bad_format(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    model, voices = _model_files(tmp_path)
+    config = Config(kokoro_model_path=str(model), kokoro_voices_path=str(voices))
+
+    fake = FakeKokoro()
+    monkeypatch.setattr(tts, "_load_kokoro", lambda cfg: fake)
+
+    with pytest.raises(tts.TTSError, match="only supports response_format='mp3' or 'pcm'"):
+        asyncio.run(tts.synthesize_stream("hi", config, response_format="ogg").__anext__())
+
+    assert fake.stream_calls == []

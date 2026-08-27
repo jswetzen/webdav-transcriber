@@ -42,8 +42,10 @@ class SpeechRequest(BaseModel):
     response_format: str = "wav"
     # Not part of OpenAI's JSON body (their client picks streaming vs. buffered by how it reads
     # the HTTP response, not via a request field) -- added explicitly here so existing wav
-    # callers keep their current buffered behavior by default. Only mp3 supports it; see
-    # tts.synthesize_stream's docstring for why.
+    # callers keep their current buffered behavior by default. Only mp3/pcm support it; see
+    # tts.synthesize_stream's docstring for why. response_format="pcm" implies streaming on its
+    # own too (see the speech() handler) since some OpenAI-compatible clients (e.g. customtts)
+    # signal streaming that way instead of setting this field.
     stream: bool = False
 
 
@@ -148,22 +150,27 @@ def create_app(config: Config) -> FastAPI:
                 ),
             )
 
-        if req.stream:
+        # response_format="pcm" always implies streaming, `stream` field or not: pcm is a
+        # headerless raw-sample format that only makes sense read incrementally, and it's what
+        # OpenAI-compatible streaming TTS clients request instead of setting a stream flag --
+        # e.g. the customtts Firefox extension never sends `stream`, only response_format=pcm,
+        # per its background.js (streaming mode) vs. response_format=mp3 (download mode).
+        if req.stream or req.response_format == "pcm":
             # response_format's Pydantic default is "wav" (the non-streaming default), which is
             # indistinguishable from a client explicitly asking for wav. Use model_fields_set
-            # to tell "left unset" (silently take mp3, the only streamable format) apart from
-            # "explicitly asked for wav" (a real 400 -- streaming a wav is impossible, not just
-            # unspecified).
-            if "response_format" in req.model_fields_set and req.response_format != "mp3":
+            # to tell "left unset" (silently take mp3) apart from "explicitly asked for wav" (a
+            # real 400 -- streaming a wav is impossible, not just unspecified).
+            fmt = req.response_format if "response_format" in req.model_fields_set else "mp3"
+            if fmt not in ("mp3", "pcm"):
                 raise HTTPException(
                     status_code=400,
                     detail=(
-                        f"stream=true only supports response_format='mp3' (wav needs a known "
-                        f"length up front); got '{req.response_format}'."
+                        f"stream=true only supports response_format='mp3' or 'pcm' (wav needs "
+                        f"a known length up front); got '{fmt}'."
                     ),
                 )
 
-            gen = synthesize_stream(req.input, config, voice=req.voice, response_format="mp3")
+            gen = synthesize_stream(req.input, config, voice=req.voice, response_format=fmt)
             # Pull the first chunk before returning a StreamingResponse: kokoro-onnx's
             # create_stream() is a plain async generator, so the model-load/voice-validation
             # code inside synthesize_stream runs on this first anext() and raises TTSError
@@ -189,9 +196,10 @@ def create_app(config: Config) -> FastAPI:
                 "Streaming speech",
                 chars=len(req.input),
                 voice=req.voice or config.tts_default_voice,
-                format="mp3",
+                format=fmt,
             )
-            return StreamingResponse(body(), media_type="audio/mpeg")
+            media_type = "audio/mpeg" if fmt == "mp3" else "audio/pcm"
+            return StreamingResponse(body(), media_type=media_type)
 
         try:
             result = await run_in_threadpool(

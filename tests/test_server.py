@@ -254,6 +254,29 @@ def test_speech_stream_tts_error_returns_400(
     assert "bogus" in resp.json()["detail"]
 
 
+def test_speech_pcm_streams_without_stream_flag(
+    monkeypatch: pytest.MonkeyPatch, tts_client: TestClient
+) -> None:
+    # Regression case: the customtts Firefox extension (and other OpenAI-compatible clients)
+    # never sets `stream`, only response_format="pcm" -- that alone must trigger streaming.
+    captured = {}
+
+    async def fake_stream(text, config, *, voice="", response_format="mp3"):
+        captured["response_format"] = response_format
+        for chunk in (b"\x01\x00", b"\x02\x00"):
+            yield chunk
+
+    monkeypatch.setattr("whisperwebdav.server.synthesize_stream", fake_stream)
+
+    resp = tts_client.post(
+        "/v1/audio/speech", json={"input": "hi", "response_format": "pcm"}
+    )
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "audio/pcm"
+    assert resp.content == b"\x01\x00\x02\x00"
+    assert captured["response_format"] == "pcm"
+
+
 def test_speech_stream_empty_generator_returns_empty_body(
     monkeypatch: pytest.MonkeyPatch, tts_client: TestClient
 ) -> None:

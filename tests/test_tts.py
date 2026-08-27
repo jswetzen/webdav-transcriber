@@ -1,9 +1,19 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from whisperwebdav.config import Config
 from whisperwebdav import tts
+
+
+def _model_files(tmp_path):
+    model = tmp_path / "kokoro-v1.0.onnx"
+    voices = tmp_path / "voices-v1.0.bin"
+    model.write_bytes(b"x")
+    voices.write_bytes(b"x")
+    return model, voices
 
 
 @pytest.fixture(autouse=True)
@@ -14,8 +24,15 @@ def _reset_singleton(monkeypatch: pytest.MonkeyPatch):
 
 
 class FakeKokoro:
-    def __init__(self):
+    def __init__(self, stream_chunks=None):
         self.calls = []
+        self.stream_calls = []
+        # (samples, sample_rate) tuples create_stream() yields; defaults to two small chunks
+        # so tests exercise the multi-chunk / eager-drain path in _stream_pcm_to_mp3.
+        self._stream_chunks = stream_chunks if stream_chunks is not None else [
+            ([0.0] * 4000, 16000),
+            ([0.0] * 4000, 16000),
+        ]
 
     def get_voices(self):
         return ["af_sarah", "af_sky"]
@@ -23,6 +40,11 @@ class FakeKokoro:
     def create(self, text, *, voice, speed, lang):
         self.calls.append((text, voice, speed, lang))
         return [0.0] * 16000, 16000
+
+    async def create_stream(self, text, *, voice, speed, lang):
+        self.stream_calls.append((text, voice, speed, lang))
+        for chunk in self._stream_chunks:
+            yield chunk
 
 
 def test_kokoro_files_present_false_by_default() -> None:
@@ -95,3 +117,79 @@ def test_synthesize_defaults_to_configured_voice(monkeypatch: pytest.MonkeyPatch
     tts.synthesize("hi", config)
 
     assert fake.calls[0][1] == "af_sarah"
+
+
+# --- synthesize_stream ---
+#
+# No async test runner (pytest-asyncio/anyio-pytest) is a dev dependency, so these stay plain
+# sync tests and drive the coroutines with asyncio.run() directly rather than adding one.
+
+
+async def _drain(agen):
+    return b"".join([chunk async for chunk in agen])
+
+
+def test_synthesize_stream_rejects_wav(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    model, voices = _model_files(tmp_path)
+    config = Config(kokoro_model_path=str(model), kokoro_voices_path=str(voices))
+
+    fake = FakeKokoro()
+    monkeypatch.setattr(tts, "_load_kokoro", lambda cfg: fake)
+
+    with pytest.raises(tts.TTSError, match="only supports response_format='mp3'"):
+        asyncio.run(tts.synthesize_stream("hi", config, response_format="wav").__anext__())
+
+    # Rejected before touching kokoro at all.
+    assert fake.stream_calls == []
+    # GPU_LOCK.acquire() never even runs for this branch, so it must still be free.
+    assert tts.GPU_LOCK.acquire(blocking=False)
+    tts.GPU_LOCK.release()
+
+
+def test_synthesize_stream_unknown_voice_raises(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    model, voices = _model_files(tmp_path)
+    config = Config(kokoro_model_path=str(model), kokoro_voices_path=str(voices))
+
+    fake = FakeKokoro()
+    monkeypatch.setattr(tts, "_load_kokoro", lambda cfg: fake)
+
+    with pytest.raises(tts.TTSError, match="Unknown voice"):
+        asyncio.run(tts.synthesize_stream("hi", config, voice="bogus").__anext__())
+
+    # GPU_LOCK was acquired-then-released around the failed validation, not leaked.
+    assert tts.GPU_LOCK.acquire(blocking=False)
+    tts.GPU_LOCK.release()
+
+
+def test_synthesize_stream_yields_mp3_bytes(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    model, voices = _model_files(tmp_path)
+    config = Config(kokoro_model_path=str(model), kokoro_voices_path=str(voices))
+
+    fake = FakeKokoro()
+    monkeypatch.setattr(tts, "_load_kokoro", lambda cfg: fake)
+
+    audio = asyncio.run(_drain(tts.synthesize_stream("hi there", config, voice="af_sky")))
+
+    assert audio.startswith(b"ID3") or audio[0:1] == b"\xff"  # mp3 tag or raw frame sync
+    assert fake.stream_calls == [("hi there", "af_sky", 1.0, config.tts_lang)]
+    # GPU_LOCK released once the generator is exhausted.
+    assert tts.GPU_LOCK.acquire(blocking=False)
+    tts.GPU_LOCK.release()
+
+
+def test_synthesize_stream_empty_chunks_yields_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    model, voices = _model_files(tmp_path)
+    config = Config(kokoro_model_path=str(model), kokoro_voices_path=str(voices))
+
+    fake = FakeKokoro(stream_chunks=[])
+    monkeypatch.setattr(tts, "_load_kokoro", lambda cfg: fake)
+
+    audio = asyncio.run(_drain(tts.synthesize_stream("hi", config)))
+
+    assert audio == b""
+    assert tts.GPU_LOCK.acquire(blocking=False)
+    tts.GPU_LOCK.release()

@@ -19,14 +19,14 @@ from pathlib import Path
 
 import structlog
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Response, UploadFile
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from .config import Config
 from .engine import transcribe_one
 from .formatter import full_text, to_srt, to_vtt
-from .tts import TTSError, available_voices, kokoro_files_present, synthesize
+from .tts import TTSError, available_voices, kokoro_files_present, synthesize, synthesize_stream
 
 log = structlog.get_logger(__name__)
 
@@ -40,6 +40,11 @@ class SpeechRequest(BaseModel):
     input: str
     voice: str = ""
     response_format: str = "wav"
+    # Not part of OpenAI's JSON body (their client picks streaming vs. buffered by how it reads
+    # the HTTP response, not via a request field) -- added explicitly here so existing wav
+    # callers keep their current buffered behavior by default. Only mp3 supports it; see
+    # tts.synthesize_stream's docstring for why.
+    stream: bool = False
 
 
 def create_app(config: Config) -> FastAPI:
@@ -142,6 +147,51 @@ def create_app(config: Config) -> FastAPI:
                     f"({config.tts_max_input_chars}). Split long articles client-side."
                 ),
             )
+
+        if req.stream:
+            # response_format's Pydantic default is "wav" (the non-streaming default), which is
+            # indistinguishable from a client explicitly asking for wav. Use model_fields_set
+            # to tell "left unset" (silently take mp3, the only streamable format) apart from
+            # "explicitly asked for wav" (a real 400 -- streaming a wav is impossible, not just
+            # unspecified).
+            if "response_format" in req.model_fields_set and req.response_format != "mp3":
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"stream=true only supports response_format='mp3' (wav needs a known "
+                        f"length up front); got '{req.response_format}'."
+                    ),
+                )
+
+            gen = synthesize_stream(req.input, config, voice=req.voice, response_format="mp3")
+            # Pull the first chunk before returning a StreamingResponse: kokoro-onnx's
+            # create_stream() is a plain async generator, so the model-load/voice-validation
+            # code inside synthesize_stream runs on this first anext() and raises TTSError
+            # here (still a normal 400) rather than after headers are already sent. See that
+            # function's docstring for the streaming-vs-error-handling tradeoff this implies.
+            try:
+                first_chunk = await gen.__anext__()
+            except StopAsyncIteration:
+                first_chunk = b""
+            except TTSError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            except Exception as exc:
+                log.exception("Speech streaming failed")
+                raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+            async def body():
+                if first_chunk:
+                    yield first_chunk
+                async for chunk in gen:
+                    yield chunk
+
+            log.info(
+                "Streaming speech",
+                chars=len(req.input),
+                voice=req.voice or config.tts_default_voice,
+                format="mp3",
+            )
+            return StreamingResponse(body(), media_type="audio/mpeg")
 
         try:
             result = await run_in_threadpool(

@@ -216,6 +216,58 @@ def test_speech_auth_required_when_key_set(monkeypatch: pytest.MonkeyPatch) -> N
     assert ok.status_code == 200
 
 
+def test_speech_stream_mp3(monkeypatch: pytest.MonkeyPatch, tts_client: TestClient) -> None:
+    async def fake_stream(text, config, *, voice="", response_format="mp3"):
+        for chunk in (b"id3-", b"chunk-", b"one"):
+            yield chunk
+
+    monkeypatch.setattr("whisperwebdav.server.synthesize_stream", fake_stream)
+
+    resp = tts_client.post("/v1/audio/speech", json={"input": "Hello there", "stream": True})
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "audio/mpeg"
+    assert resp.content == b"id3-chunk-one"
+
+
+def test_speech_stream_rejects_wav(tts_client: TestClient) -> None:
+    resp = tts_client.post(
+        "/v1/audio/speech",
+        json={"input": "hi", "stream": True, "response_format": "wav"},
+    )
+    assert resp.status_code == 400
+    assert "mp3" in resp.json()["detail"]
+
+
+def test_speech_stream_tts_error_returns_400(
+    monkeypatch: pytest.MonkeyPatch, tts_client: TestClient
+) -> None:
+    async def raising(text, config, *, voice="", response_format="mp3"):
+        raise TTSError("Unknown voice 'bogus'")
+        yield b""  # pragma: no cover - never reached; makes this an async generator
+
+    monkeypatch.setattr("whisperwebdav.server.synthesize_stream", raising)
+
+    resp = tts_client.post(
+        "/v1/audio/speech", json={"input": "hi", "voice": "bogus", "stream": True}
+    )
+    assert resp.status_code == 400
+    assert "bogus" in resp.json()["detail"]
+
+
+def test_speech_stream_empty_generator_returns_empty_body(
+    monkeypatch: pytest.MonkeyPatch, tts_client: TestClient
+) -> None:
+    async def empty(text, config, *, voice="", response_format="mp3"):
+        return
+        yield b""  # pragma: no cover - never reached; makes this an async generator
+
+    monkeypatch.setattr("whisperwebdav.server.synthesize_stream", empty)
+
+    resp = tts_client.post("/v1/audio/speech", json={"input": "hi", "stream": True})
+    assert resp.status_code == 200
+    assert resp.content == b""
+
+
 def test_list_models_includes_kokoro_when_files_present(
     monkeypatch: pytest.MonkeyPatch, tts_client: TestClient
 ) -> None:

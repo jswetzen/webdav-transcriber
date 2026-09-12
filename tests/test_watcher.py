@@ -16,11 +16,17 @@ from whisperwebdav.watcher import poll, process_batch
 # ---------------------------------------------------------------------------
 
 
-def make_mock_webdav(audio_files=None, done_files=None):
+def make_mock_webdav(audio_files=None, done_files=None, quarantined_files=None):
     webdav = MagicMock()
     webdav.list_audio_files.return_value = audio_files or []
     done_files = done_files or set()
     webdav.done_marker_exists.side_effect = lambda f: f in done_files
+    quarantined_files = quarantined_files or set()
+    webdav.quarantined_marker_exists.side_effect = lambda f: f in quarantined_files
+    # record_failure must return an int (compared against config.max_retries); default to
+    # "first failure" so plain MagicMock() webdav fixtures don't need to know about it.
+    webdav.record_failure.return_value = 1
+    webdav.get_failure_count.return_value = 0
     return webdav
 
 
@@ -87,6 +93,21 @@ class TestPoll:
 
         webdav.done_marker_exists.assert_not_called()
 
+    def test_skips_quarantined_files(self, minimal_config):
+        """A file given up on after max_retries failures must never be re-queued -- this is
+        the actual production fix (2026-09-12: four files re-queued ~1000x/day each)."""
+        webdav = make_mock_webdav(
+            audio_files=["a.mp3", "quarantined.mp3"],
+            quarantined_files={"quarantined.mp3"},
+        )
+        notifier = MagicMock()
+
+        with patch("whisperwebdav.watcher.process_batch") as mock_process:
+            poll(webdav, minimal_config, notifier)
+            mock_process.assert_called_once()
+            chunk = mock_process.call_args[0][0]
+            assert chunk == ["a.mp3"]
+
     def test_chunks_by_max_batch_size(self, minimal_config):
         files = [f"f{i}.mp3" for i in range(17)]
         webdav = make_mock_webdav(audio_files=files)
@@ -108,7 +129,7 @@ class TestPoll:
 class TestProcessBatch:
     def test_uploads_each_format(self, minimal_config, mock_segments):
         minimal_config.__dict__["output_formats"] = "txt,srt"
-        webdav = MagicMock()
+        webdav = make_mock_webdav()
         notifier = MagicMock()
 
         def fake_transcribe(local_paths, config):
@@ -126,7 +147,7 @@ class TestProcessBatch:
     def test_marks_done_and_notifies_for_each_file(
         self, minimal_config, mock_segments
     ):
-        webdav = MagicMock()
+        webdav = make_mock_webdav()
         notifier = MagicMock()
 
         def fake_transcribe(local_paths, config):
@@ -146,7 +167,7 @@ class TestProcessBatch:
     def test_transcribe_failure_notifies_all_no_done(
         self, minimal_config, mock_segments
     ):
-        webdav = MagicMock()
+        webdav = make_mock_webdav()
         notifier = MagicMock()
 
         with patch(
@@ -161,8 +182,58 @@ class TestProcessBatch:
         assert notifier.notify_failure.call_count == 3
         assert notifier.notify_success.call_count == 0
 
+    def test_quarantines_after_max_retries(self, minimal_config, mock_segments):
+        """A file's Nth consecutive failure (N = config.max_retries) must quarantine it --
+        marker written, a one-time notify_quarantined instead of notify_failure -- so it
+        stops being re-queued forever."""
+        minimal_config.__dict__["max_retries"] = 3
+        webdav = make_mock_webdav()
+        webdav.record_failure.return_value = 3  # this is the 3rd consecutive failure
+        notifier = MagicMock()
+
+        with patch(
+            "whisperwebdav.watcher.transcribe_batch",
+            side_effect=RuntimeError("transcribe boom"),
+        ):
+            process_batch(["chronic.mp3"], webdav, minimal_config, notifier)
+
+        webdav.create_quarantine_marker.assert_called_once()
+        assert webdav.create_quarantine_marker.call_args[0][0] == "chronic.mp3"
+        notifier.notify_quarantined.assert_called_once()
+        notifier.notify_failure.assert_not_called()
+
+    def test_does_not_quarantine_below_max_retries(self, minimal_config, mock_segments):
+        minimal_config.__dict__["max_retries"] = 3
+        webdav = make_mock_webdav()
+        webdav.record_failure.return_value = 2  # below the threshold
+        notifier = MagicMock()
+
+        with patch(
+            "whisperwebdav.watcher.transcribe_batch",
+            side_effect=RuntimeError("transcribe boom"),
+        ):
+            process_batch(["flaky.mp3"], webdav, minimal_config, notifier)
+
+        webdav.create_quarantine_marker.assert_not_called()
+        notifier.notify_quarantined.assert_not_called()
+        notifier.notify_failure.assert_called_once()
+
+    def test_success_clears_failure_count(self, minimal_config, mock_segments):
+        webdav = make_mock_webdav()
+        notifier = MagicMock()
+
+        def fake_transcribe(local_paths, config):
+            return fake_batch_result(local_paths, mock_segments)
+
+        with patch(
+            "whisperwebdav.watcher.transcribe_batch", side_effect=fake_transcribe
+        ):
+            process_batch(["recovered.mp3"], webdav, minimal_config, notifier)
+
+        webdav.clear_failure_count.assert_called_once_with("recovered.mp3")
+
     def test_per_file_upload_isolation(self, minimal_config, mock_segments):
-        webdav = MagicMock()
+        webdav = make_mock_webdav()
         notifier = MagicMock()
 
         # Fail upload only for the 'bad.mp3' stem
@@ -194,7 +265,7 @@ class TestProcessBatch:
     def test_download_failure_skips_only_that_file(
         self, minimal_config, mock_segments
     ):
-        webdav = MagicMock()
+        webdav = make_mock_webdav()
         notifier = MagicMock()
 
         def download_side_effect(filename, local_path):
@@ -223,7 +294,7 @@ class TestProcessBatch:
         assert notifier.notify_success.call_count == 1
 
     def test_cleans_workspace(self, minimal_config, mock_segments):
-        webdav = MagicMock()
+        webdav = make_mock_webdav()
         notifier = MagicMock()
 
         captured = {}
@@ -242,7 +313,7 @@ class TestProcessBatch:
 
     def test_prefixes_output_subdir(self, minimal_config, mock_segments):
         minimal_config.__dict__["output_subdir"] = "transcripts"
-        webdav = MagicMock()
+        webdav = make_mock_webdav()
         notifier = MagicMock()
 
         def fake_transcribe(local_paths, config):
@@ -257,7 +328,7 @@ class TestProcessBatch:
         assert all(n.startswith("transcripts/") for n in upload_names)
 
     def test_empty_batch_is_noop(self, minimal_config):
-        webdav = MagicMock()
+        webdav = make_mock_webdav()
         notifier = MagicMock()
 
         with patch("whisperwebdav.watcher.transcribe_batch") as mock_transcribe:

@@ -46,3 +46,19 @@ class Notifier:
             "Transcription failed",
             f"Failed to transcribe '{filename}'.\nError: {error}",
         )
+
+    def notify_quarantined(self, filename: str, attempts: int, error: Exception) -> None:
+        """Send a one-time quarantine notification. No-op if no URLs are configured.
+
+        Unlike notify_failure (sent on every failed attempt), this fires exactly once, when
+        a file crosses max_retries and is given up on for good -- so a human still finds out,
+        even though the poll loop will now stay silent about that file forever.
+        """
+        if not self._enabled:
+            return
+        self._send(
+            "Transcription permanently failed — quarantined",
+            f"'{filename}' failed {attempts} times and will not be retried again.\n"
+            f"Last error: {error}\n"
+            "Delete its .quarantined and .failcount sidecars on the share to retry.",
+        )

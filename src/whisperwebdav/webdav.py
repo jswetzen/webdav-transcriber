@@ -93,3 +93,69 @@ class WebDAVClient:
         stem = Path(audio_filename).stem
         marker = f"{stem}.done"
         self.upload_string("", marker)
+
+    def quarantined_marker_exists(self, audio_filename: str) -> bool:
+        """Check if a .quarantined sidecar exists (given up after too many failures)."""
+        try:
+            stem = Path(audio_filename).stem
+            marker = f"{stem}.quarantined"
+            remote_path = str(Path(self._watch_path) / marker)
+            return self._client.check(remote_path)
+        except Exception:
+            log.exception("Failed to check quarantine marker", filename=audio_filename)
+            return False
+
+    def create_quarantine_marker(self, audio_filename: str, reason: str) -> None:
+        """Create a .quarantined sidecar recording why the file was given up on.
+
+        Written once a file's failure count sidecar (see record_failure) crosses
+        config.max_retries -- stops the poll loop from ever re-attempting it, so a file
+        that cannot succeed doesn't re-queue forever (was ~1000x/day/file in production
+        before this existed, see the 2026-09-12 incident notes in transcriber.py).
+        """
+        stem = Path(audio_filename).stem
+        self.upload_string(reason, f"{stem}.quarantined")
+
+    def get_failure_count(self, audio_filename: str) -> int:
+        """Read the persisted failure count sidecar. Returns 0 if missing or unreadable.
+
+        Persisted to WebDAV (not kept in-process) so the count survives a poller restart
+        (redeploy, pull, crash) -- otherwise every restart would reset every file's count
+        to 0 and a permanently-broken file would never actually reach quarantine.
+        """
+        stem = Path(audio_filename).stem
+        remote_path = str(Path(self._watch_path) / f"{stem}.failcount")
+        if not self._client.check(remote_path):
+            return 0
+        fd, tmp_path = tempfile.mkstemp()
+        os.close(fd)
+        try:
+            self._client.download_sync(remote_path=remote_path, local_path=tmp_path)
+            return int(Path(tmp_path).read_text().strip())
+        except (OSError, ValueError):
+            log.exception(
+                "Failed to read failure count sidecar; treating as 0", filename=audio_filename
+            )
+            return 0
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+    def record_failure(self, audio_filename: str) -> int:
+        """Increment and persist the failure count sidecar for a file. Returns the new count."""
+        count = self.get_failure_count(audio_filename) + 1
+        stem = Path(audio_filename).stem
+        self.upload_string(str(count), f"{stem}.failcount")
+        return count
+
+    def clear_failure_count(self, audio_filename: str) -> None:
+        """Remove the failure count sidecar, e.g. after an eventual success."""
+        stem = Path(audio_filename).stem
+        remote_path = str(Path(self._watch_path) / f"{stem}.failcount")
+        try:
+            if self._client.check(remote_path):
+                self._client.clean(remote_path)
+        except Exception:
+            log.exception("Failed to clear failure count sidecar", filename=audio_filename)

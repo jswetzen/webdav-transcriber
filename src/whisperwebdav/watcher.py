@@ -33,12 +33,22 @@ def _configure_logging(config: Config) -> None:
     ]
 
     if config.log_format == "json":
-        renderer = structlog.processors.JSONRenderer()
+        # JSONRenderer can't render exc_info itself -- without format_exc_info first,
+        # log.exception(...) produces a literal `"exc_info": true` in the log line and the
+        # real traceback is silently dropped. Bit us in production 2026-09-12: four files
+        # 500ed ~1000x/day each and the journal never once showed why; had to reproduce by
+        # hand against the server to recover the actual exception.
+        processors = shared_processors + [
+            structlog.processors.format_exc_info,
+            structlog.processors.JSONRenderer(),
+        ]
     else:
-        renderer = structlog.dev.ConsoleRenderer()
+        # ConsoleRenderer renders exc_info itself (pretty traceback) -- don't pre-empt it
+        # with format_exc_info, which would replace that with a plain string field.
+        processors = shared_processors + [structlog.dev.ConsoleRenderer()]
 
     structlog.configure(
-        processors=shared_processors + [renderer],
+        processors=processors,
         wrapper_class=structlog.make_filtering_bound_logger(log_level),
         context_class=dict,
         logger_factory=structlog.PrintLoggerFactory(),
@@ -72,7 +82,39 @@ def _publish_results(
         webdav.upload_string(content, remote_path)
 
     webdav.create_done_marker(filename)
+    # Clear any accumulated failure count from earlier attempts -- a transient failure
+    # (network blip, server restart) shouldn't count toward quarantine once the file
+    # actually goes on to succeed.
+    webdav.clear_failure_count(filename)
     notifier.notify_success(filename, formats)
+
+
+def _handle_failure(
+    filename: str,
+    exc: Exception,
+    webdav: WebDAVClient,
+    config: Config,
+    notifier: Notifier,
+) -> None:
+    """Record one failed attempt at `filename`; quarantine it once max_retries is crossed.
+
+    Centralizes what used to be a bare notifier.notify_failure() at each of the three
+    failure points in process_batch (download, transcribe, publish) so all of them count
+    toward the same per-file budget and none can loop forever. See config.max_retries and
+    the 2026-09-12 incident notes in transcriber.py for why this exists.
+    """
+    attempts = webdav.record_failure(filename)
+    if attempts >= config.max_retries:
+        log.error(
+            "Quarantining file after repeated failures",
+            filename=filename,
+            attempts=attempts,
+            max_retries=config.max_retries,
+        )
+        webdav.create_quarantine_marker(filename, reason=str(exc))
+        notifier.notify_quarantined(filename, attempts, exc)
+    else:
+        notifier.notify_failure(filename, exc)
 
 
 def process_batch(
@@ -102,7 +144,7 @@ def process_batch(
                 webdav.download(filename, local_path)
             except Exception as exc:
                 log.exception("Download failed", filename=filename)
-                notifier.notify_failure(filename, exc)
+                _handle_failure(filename, exc, webdav, config, notifier)
                 continue
             local_paths.append(local_path)
             filename_by_local[local_path] = filename
@@ -120,7 +162,7 @@ def process_batch(
                     segments_by_path[local_path] = transcribe_remote(local_path, config)
                 except Exception as exc:
                     log.exception("Remote transcription failed", filename=filename)
-                    notifier.notify_failure(filename, exc)
+                    _handle_failure(filename, exc, webdav, config, notifier)
         else:
             try:
                 result = transcribe_batch(local_paths, config)
@@ -131,7 +173,7 @@ def process_batch(
                     filenames=list(filename_by_local.values()),
                 )
                 for filename in filename_by_local.values():
-                    notifier.notify_failure(filename, exc)
+                    _handle_failure(filename, exc, webdav, config, notifier)
                 return
             segments_by_path = result.segments_by_path
 
@@ -142,7 +184,7 @@ def process_batch(
                 log.info("File processed successfully", filename=filename)
             except Exception as exc:
                 log.exception("Failed to publish results", filename=filename)
-                notifier.notify_failure(filename, exc)
+                _handle_failure(filename, exc, webdav, config, notifier)
 
     finally:
         if result is not None:
@@ -162,6 +204,9 @@ def poll(webdav: WebDAVClient, config: Config, notifier: Notifier) -> bool:
     for filename in audio_files:
         if webdav.done_marker_exists(filename):
             log.debug("Skipping already-done file", filename=filename)
+            continue
+        if webdav.quarantined_marker_exists(filename):
+            log.debug("Skipping quarantined file", filename=filename)
             continue
         pending.append(filename)
 

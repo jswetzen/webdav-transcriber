@@ -53,6 +53,11 @@ class Config(BaseSettings):
     # Polling
     poll_interval_seconds: int = 60
     max_batch_size: int = 8
+    # After this many consecutive failures a file is quarantined (a .quarantined sidecar is
+    # written and it's never retried again) instead of re-queued forever. Was unbounded before
+    # 2026-09-12: four permanently-failing files each re-queued ~1000x/day, 70% of the fleet's
+    # journal volume for this CT, until this incident.
+    max_retries: int = 5
 
     # Transcription models
     transcription_model: str = "KBLab/kb-whisper-large"
@@ -90,6 +95,13 @@ class Config(BaseSettings):
     def validate_max_batch_size(cls, v: int) -> int:
         if v < 1:
             raise ValueError("max_batch_size must be >= 1")
+        return v
+
+    @field_validator("max_retries")
+    @classmethod
+    def validate_max_retries(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("max_retries must be >= 1")
         return v
 
     @field_validator("language")

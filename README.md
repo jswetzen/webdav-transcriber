@@ -109,6 +109,8 @@ curl http://localhost:8000/v1/audio/speech \
 
 Unlike `/v1/audio/transcriptions`, this endpoint takes a JSON body (`model`, `input`, `voice`, `response_format`), matching OpenAI's own request shape. `response_format` is `wav` (default) or `mp3` (transcoded through the `ffmpeg` already bundled for Whisper's input demuxing). `GET /v1/models` lists available voices under a `voices` key once the model files below are present, and warms the model on first call.
 
+Streaming is supported too: send `"stream": true` with `response_format` `mp3` or `pcm`, and audio is sent as soon as kokoro-onnx's `create_stream()` produces each sentence or clause, instead of after the whole utterance. `pcm` is raw mono s16le at 24 kHz with no container. It *always* streams, whether `stream` is set or not, because that is how OpenAI-compatible streaming clients (e.g. the customtts Firefox extension) request low-latency playback. `wav` can't be streamed: a valid WAV header needs the total length up front, so `stream: true` with `wav` returns `400`.
+
 ### Model files
 
 kokoro-onnx doesn't fetch its own weights from a package index — download the two release assets once and place them where `KOKORO_MODEL_PATH` / `KOKORO_VOICES_PATH` point (the model-cache volume by default, alongside the Whisper cache):
@@ -122,7 +124,9 @@ Until both files exist, `/v1/audio/speech` returns `400` and `/v1/models` simply
 
 GPU inference is automatic when `GPU_ENABLED=true`: ONNX Runtime picks up `CUDAExecutionProvider` on its own once `onnxruntime-gpu` is installed (the Docker image does this for x86_64 builds, reusing the CUDA 12 / cuDNN 9 libraries already staged for Whisper — see the Dockerfile). No separate synthesis queue exists: Kokoro synthesis and Whisper transcription share the same process-global GPU lock used for transcription, so the two never run concurrently on one card.
 
-**Not implemented (deliberately out of scope for this pass):** true incremental audio streaming (Kokoro synthesizes the full utterance before this returns it — `create_stream()` exists upstream but isn't wired up here), response caching, Prometheus metrics (no metrics infra exists in this service yet), and a generic per-request timeout middleware. `TTS_MAX_INPUT_CHARS` is the only guard against oversized/slow requests today.
+**Not implemented (deliberately out of scope for this pass):** response caching, Prometheus metrics (no metrics infra exists in this service yet), and a generic per-request timeout middleware. `TTS_MAX_INPUT_CHARS` is the only guard against oversized/slow requests today.
+
+For a survey of alternative TTS models (Qwen3-TTS, Qwen-Audio 3.1, Chatterbox, Piper, …) and why Kokoro stays for now, see [docs/tts-alternatives.md](docs/tts-alternatives.md).
 
 ## Docker Compose
 

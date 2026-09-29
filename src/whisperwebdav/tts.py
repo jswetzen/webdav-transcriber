@@ -18,10 +18,12 @@ Kokoro itself doesn't know about Whisper.
 from __future__ import annotations
 
 import asyncio
+import gc
 import io
 import shutil
 import subprocess
 import threading
+import time
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,6 +46,20 @@ _kokoro = None
 _init_lock = threading.Lock()
 _voices_cache: frozenset[str] | None = None
 
+# Idle release. The ONNX Runtime session is NOT covered by transcriber.release_gpu_memory():
+# that calls torch.cuda.empty_cache(), which only touches PyTorch's allocator, and Kokoro runs on
+# onnxruntime-gpu, whose CUDA arena lives and dies with the InferenceSession. Observed 2026-09-29:
+# ~2.3 GiB of VRAM still held by whisper-server more than a day after its last /v1/audio/speech
+# request, which left no room for bonsai (llama-server on the ollama CT) on the shared 12 GB card
+# and put it in a crash loop on cudaMalloc OOM. The only way to give that memory back is to drop
+# the session, so a watchdog thread does exactly that after tts_idle_release_seconds without a
+# request and the next request pays the (cheap, see module docstring) reload. _voices_cache is
+# deliberately kept across a release: it's a plain frozenset with no GPU cost, and keeping it
+# means a /v1/models listing after a release doesn't reload the model just to name the voices.
+_last_used = time.monotonic()
+_watchdog: threading.Thread | None = None
+_WATCHDOG_MAX_POLL_SECONDS = 30.0
+
 
 class TTSError(RuntimeError):
     """User-facing synthesis failure: bad request, missing model files, encoding failure."""
@@ -55,12 +71,60 @@ def kokoro_files_present(config: Config) -> bool:
     return Path(config.kokoro_model_path).is_file() and Path(config.kokoro_voices_path).is_file()
 
 
+def _touch() -> None:
+    global _last_used
+    _last_used = time.monotonic()
+
+
+def _release_if_idle(idle_seconds: float) -> bool:
+    """Drop the Kokoro session if it has sat unused for `idle_seconds`. Returns True when the
+    watchdog is done (released, or already gone) and False when it should keep waiting.
+
+    GPU_LOCK is only try-acquired: a synthesis (or a streaming response, which holds it for the
+    whole utterance) means the model is in use right now, so we back off and look again next
+    tick instead of blocking behind it. Lock order is _init_lock -> GPU_LOCK here but
+    GPU_LOCK -> _init_lock in _load_kokoro's callers; that can't deadlock because this side never
+    waits on GPU_LOCK.
+    """
+    global _kokoro, _watchdog
+    with _init_lock:
+        if _kokoro is None:
+            _watchdog = None
+            return True
+        if time.monotonic() - _last_used < idle_seconds:
+            return False
+        if not GPU_LOCK.acquire(blocking=False):
+            return False
+        try:
+            _kokoro = None
+            _watchdog = None
+        finally:
+            GPU_LOCK.release()
+    # The session is destroyed (and its CUDA arena freed) once the last reference goes; collect
+    # now rather than whenever the GC next gets around to it, since the point is to free VRAM.
+    gc.collect()
+    log.info("Released idle Kokoro TTS model", idle_seconds=idle_seconds)
+    return True
+
+
+def _watch_idle(idle_seconds: float) -> None:
+    # Poll at most every 30s so a long idle threshold still releases reasonably close to it,
+    # without a busy loop for a short one.
+    poll = min(idle_seconds, _WATCHDOG_MAX_POLL_SECONDS)
+    while True:
+        time.sleep(poll)
+        if _release_if_idle(idle_seconds):
+            return
+
+
 def _load_kokoro(config: Config):
-    global _kokoro
+    global _kokoro, _watchdog
     if _kokoro is not None:
+        _touch()
         return _kokoro
     with _init_lock:
         if _kokoro is not None:
+            _touch()
             return _kokoro
         if not kokoro_files_present(config):
             raise TTSError(
@@ -80,6 +144,15 @@ def _load_kokoro(config: Config):
         except ImportError:
             pass
         _kokoro = instance
+        _touch()
+        # One watchdog per loaded instance: it exits after releasing, and the next load (the
+        # first request after a release) starts a fresh one.
+        idle = config.tts_idle_release_seconds
+        if idle > 0 and _watchdog is None:
+            _watchdog = threading.Thread(
+                target=_watch_idle, args=(idle,), name="kokoro-idle-release", daemon=True
+            )
+            _watchdog.start()
         return _kokoro
 
 
@@ -119,6 +192,7 @@ def synthesize(
 
         log.info("Synthesizing speech", chars=len(text), voice=voice, format=response_format)
         samples, sample_rate = kokoro.create(text, voice=voice, speed=1.0, lang=config.tts_lang)
+        _touch()
 
     wav_bytes = _encode_wav(samples, sample_rate)
     duration = len(samples) / float(sample_rate)
@@ -183,6 +257,10 @@ async def synthesize_stream(
         async for audio_bytes in encode(chunks):
             yield audio_bytes
     finally:
+        # Touch before releasing the lock so idle time counts from the END of a long stream,
+        # not from when it started (_load_kokoro's touch) -- otherwise a multi-minute stream
+        # could be released moments after it finishes.
+        _touch()
         GPU_LOCK.release()
 
 

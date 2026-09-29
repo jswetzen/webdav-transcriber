@@ -78,6 +78,12 @@ class Config(BaseSettings):
     tts_default_voice: str = "af_sarah"
     tts_lang: str = "en-us"
     tts_max_input_chars: int = 5000
+    # Seconds without a TTS request before the Kokoro ONNX session is dropped to hand its VRAM
+    # back to co-located consumers (see tts.py). 0 keeps it resident for the process lifetime.
+    # Separate from gpu_idle_release_seconds on purpose: that one is only read by watcher.py's
+    # poll loop (a thin HTTP client with no model of its own) and drives a torch cache flush,
+    # which does nothing for onnxruntime's CUDA arena anyway.
+    tts_idle_release_seconds: int = 300
 
     # Output
     output_formats: str = "txt"

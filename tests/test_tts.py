@@ -29,6 +29,8 @@ def _reset_singleton(monkeypatch: pytest.MonkeyPatch):
     # tts.py caches the Kokoro instance/voices at module scope; isolate tests from each other.
     monkeypatch.setattr(tts, "_kokoro", None)
     monkeypatch.setattr(tts, "_voices_cache", None)
+    monkeypatch.setattr(tts, "_watchdog", None)
+    monkeypatch.setattr(tts, "_last_used", tts.time.monotonic())
 
 
 class FakeKokoro:
@@ -245,3 +247,81 @@ def test_synthesize_stream_rejects_bad_format(
         asyncio.run(tts.synthesize_stream("hi", config, response_format="ogg").__anext__())
 
     assert fake.stream_calls == []
+
+
+# --- Idle release (tts_idle_release_seconds) -------------------------------------------------
+# These drive _release_if_idle() directly rather than waiting on the watchdog thread, so they
+# don't depend on real sleeps.
+
+
+def test_release_if_idle_drops_model_after_idle(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(tts, "_kokoro", FakeKokoro())
+    monkeypatch.setattr(tts, "_last_used", tts.time.monotonic() - 1000)
+
+    assert tts._release_if_idle(300) is True
+    assert tts._kokoro is None
+
+
+def test_release_if_idle_waits_while_gpu_lock_held(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A synthesis or stream in flight holds GPU_LOCK; the watchdog must back off, not block.
+    monkeypatch.setattr(tts, "_kokoro", FakeKokoro())
+    monkeypatch.setattr(tts, "_last_used", tts.time.monotonic() - 1000)
+
+    tts.GPU_LOCK.acquire()
+    try:
+        assert tts._release_if_idle(300) is False
+        assert tts._kokoro is not None
+    finally:
+        tts.GPU_LOCK.release()
+
+    assert tts._release_if_idle(300) is True
+    assert tts._kokoro is None
+
+
+def test_release_if_idle_keeps_model_before_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = FakeKokoro()
+    monkeypatch.setattr(tts, "_kokoro", fake)
+    monkeypatch.setattr(tts, "_last_used", tts.time.monotonic() - 10)
+
+    assert tts._release_if_idle(300) is False
+    assert tts._kokoro is fake
+
+
+def _install_fake_kokoro_module(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+    import types
+
+    module = types.ModuleType("kokoro_onnx")
+    module.Kokoro = lambda model_path, voices_path: FakeKokoro()
+    monkeypatch.setitem(sys.modules, "kokoro_onnx", module)
+
+
+def test_idle_release_zero_starts_no_watchdog(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    _install_fake_kokoro_module(monkeypatch)
+    model, voices = _model_files(tmp_path)
+    config = Config(
+        kokoro_model_path=str(model), kokoro_voices_path=str(voices), tts_idle_release_seconds=0
+    )
+
+    assert isinstance(tts._load_kokoro(config), FakeKokoro)
+    assert tts._watchdog is None
+
+
+def test_load_starts_watchdog_that_releases(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    _install_fake_kokoro_module(monkeypatch)
+    monkeypatch.setattr(tts, "_WATCHDOG_MAX_POLL_SECONDS", 0.01)
+    model, voices = _model_files(tmp_path)
+    config = Config(
+        kokoro_model_path=str(model), kokoro_voices_path=str(voices), tts_idle_release_seconds=1
+    )
+
+    tts._load_kokoro(config)
+    watchdog = tts._watchdog
+    assert watchdog is not None and watchdog.name == "kokoro-idle-release"
+    # Pretend the last request was long ago so the next poll releases.
+    monkeypatch.setattr(tts, "_last_used", tts.time.monotonic() - 1000)
+    watchdog.join(timeout=5)
+
+    assert not watchdog.is_alive()
+    assert tts._kokoro is None
+    assert tts._watchdog is None

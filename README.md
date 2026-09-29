@@ -52,6 +52,7 @@ All configuration is done via environment variables (or a `.env` file).
 | `TTS_DEFAULT_VOICE` | `"af_sarah"` | Voice used when a request omits `voice` |
 | `TTS_LANG` | `"en-us"` | Kokoro phonemizer language (not exposed via the API — OpenAI's TTS request has no `lang` field) |
 | `TTS_MAX_INPUT_CHARS` | `5000` | Reject `/v1/audio/speech` requests with longer `input` |
+| `TTS_IDLE_RELEASE_SECONDS` | `300` | Drop the Kokoro ONNX session (and its VRAM) after this long without a TTS request; the next request reloads it. `0` keeps it resident |
 
 ### Supported Languages
 

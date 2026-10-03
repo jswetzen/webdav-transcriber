@@ -33,3 +33,13 @@ def test_http_backend_requires_server_url() -> None:
 def test_http_backend_with_server_url_ok() -> None:
     cfg = Config(transcribe_backend="http", transcribe_server_url="http://srv:8000")
     assert cfg.transcribe_server_url == "http://srv:8000"
+
+
+@pytest.mark.parametrize("value", [0, -1])
+def test_max_upload_bytes_must_be_positive(value: int) -> None:
+    with pytest.raises(ValidationError):
+        Config(max_upload_bytes=value)
+
+
+def test_max_upload_bytes_default_is_2_gib() -> None:
+    assert Config().max_upload_bytes == 2 * 1024**3

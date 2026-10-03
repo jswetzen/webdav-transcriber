@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 AUDIO_EXTENSIONS: frozenset[str] = frozenset(
@@ -49,6 +49,12 @@ class Config(BaseSettings):
     # OpenAI-compatible server bind (whisperwebdav-server only).
     server_host: str = "0.0.0.0"
     server_port: int = 8000
+    # Upper bound in bytes on a POST /v1/audio/transcriptions request body (enforced before and
+    # while the upload is buffered, see server.BodyLimitMiddleware). 2 GiB by default because the
+    # poll loop in http mode uploads whole WAV/FLAC files (~11 MiB/min for 48 kHz stereo WAV): a
+    # lower default would 413 long recordings, which the poller then quarantines. Operators
+    # exposing the server publicly may want a smaller value.
+    max_upload_bytes: int = Field(default=2 * 1024**3, gt=0)
 
     # Polling
     poll_interval_seconds: int = 60

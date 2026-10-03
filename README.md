@@ -25,9 +25,10 @@ All configuration is done via environment variables (or a `.env` file).
 |---|---|---|
 | `TRANSCRIBE_BACKEND` | `"local"` | Poll loop only: `local` transcribes in-process, `http` offloads to a server |
 | `TRANSCRIBE_SERVER_URL` | `""` | Required when `TRANSCRIBE_BACKEND=http` (e.g. `http://whisper-server:8000`) |
-| `API_KEY` | `""` | Optional bearer key. Server requires it on requests when set; http client sends it |
+| `API_KEY` | `""` | Optional bearer key. When set, the server requires it on every request except `/healthz` (including `GET /v1/models`) and checks it before the request body is read; the http client sends it. `/healthz` is always open |
 | `SERVER_HOST` | `"0.0.0.0"` | Server bind host (`whisperwebdav-server` only) |
 | `SERVER_PORT` | `8000` | Server bind port (`whisperwebdav-server` only) |
+| `MAX_UPLOAD_BYTES` | `2147483648` (2 GiB) | Max request body for `POST /v1/audio/transcriptions`; larger uploads get `413`. Must be > 0 (`whisperwebdav-server` only) |
 | `WEBDAV_URL` | *(required for poll loop)* | Base URL of the WebDAV server (unused by the server) |
 | `WEBDAV_USERNAME` | `""` | WebDAV username (use with `WEBDAV_PASSWORD`) |
 | `WEBDAV_PASSWORD` | `""` | WebDAV password |
@@ -95,6 +96,17 @@ Endpoints: `POST /v1/audio/transcriptions`, `POST /v1/audio/speech`, `GET /v1/mo
 | `srt` / `vtt` | subtitle text with timestamps |
 
 The form fields `model` and `temperature` are accepted for client compatibility; `language` overrides the server's configured language per request.
+
+### Exposing to the internet
+
+If you put the server behind a reverse proxy on a public address:
+
+- Set `API_KEY` to a long random value (`openssl rand -base64 32`). It is checked before any request body is read, so unauthenticated clients can't make the server buffer uploads.
+- Terminate TLS at the reverse proxy; the bearer key is sent in clear text over plain HTTP.
+- `/healthz` is deliberately unauthenticated (container healthcheck, proxy probes). Every other path needs the key.
+- The interactive `/docs`, `/redoc` and `/openapi.json` are disabled.
+- `GET /v1/models` needs the key too, so OpenAI-style clients (Open WebUI, the customtts Firefox extension) must be configured with it for model and voice discovery.
+- `MAX_UPLOAD_BYTES` defaults to 2 GiB so the poll loop can upload long WAV/FLAC recordings; when exposing publicly you may want a lower value.
 
 ## Text-to-speech (Kokoro)
 

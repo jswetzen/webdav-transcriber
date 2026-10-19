@@ -1,5 +1,5 @@
 # Stage 1: builder
-FROM python:3.14-slim AS builder
+FROM python:3.15-slim AS builder
 
 COPY --from=ghcr.io/astral-sh/uv:0.5.30 /uv /uvx /bin/
 
@@ -41,7 +41,7 @@ RUN if [ "$(uname -m)" = "x86_64" ]; then \
 
 
 # Stage 2: final runtime image
-FROM python:3.14-slim
+FROM python:3.15-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
     && rm -rf /var/lib/apt/lists/*

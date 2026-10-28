@@ -5,8 +5,6 @@ from typing import Literal
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# .amr / .awb are what Android call recorders write (narrowband / wideband AMR). Nothing else
-# is needed for them: ffmpeg decodes both natively and the upload path keeps the file's suffix.
 AUDIO_EXTENSIONS: frozenset[str] = frozenset(
     {".mp3", ".wav", ".m4a", ".ogg", ".flac", ".opus", ".aac", ".amr", ".awb"}
 )

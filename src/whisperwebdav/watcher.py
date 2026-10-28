@@ -64,6 +64,9 @@ def _publish_results(
 ) -> None:
     """Format, upload, and mark done for a single transcribed file."""
     stem = Path(filename).stem
+    # Outputs sit beside the audio file (it may be in a subfolder), unless output_subdir says otherwise.
+    folder = Path(filename).parent.as_posix()
+    prefix = "" if folder == "." else f"{folder}/"
     formats = config.output_formats_list
 
     for fmt in formats:
@@ -77,7 +80,7 @@ def _publish_results(
         if config.output_subdir:
             remote_path = f"{config.output_subdir.rstrip('/')}/{output_name}"
         else:
-            remote_path = output_name
+            remote_path = f"{prefix}{output_name}"
 
         webdav.upload_string(content, remote_path)
 
@@ -139,7 +142,8 @@ def process_batch(
 
     try:
         for filename in filenames:
-            local_path = str(Path(download_dir) / filename)
+            # Flattened: the local transcribe backend wants every file in one directory.
+            local_path = str(Path(download_dir) / filename.replace("/", "__"))
             try:
                 webdav.download(filename, local_path)
             except Exception as exc:

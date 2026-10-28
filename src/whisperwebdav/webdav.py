@@ -38,28 +38,38 @@ class WebDAVClient:
         self._client.list(self._watch_path)
 
     def list_audio_files(self) -> list[str]:
-        """List audio files in the watch path. Returns [] on error."""
+        """List audio files under the watch path, recursing into subfolders. Returns [] on error.
+
+        Names are relative to the watch path (e.g. "Call recordings/x.amr"), and every
+        sidecar is derived from that same relative path so it lands beside its audio file.
+        """
         try:
-            entries = self._client.list(self._watch_path)
-            results = []
-            for entry in entries:
-                # Skip directory entries (end with /) and the directory itself
-                if entry.endswith("/"):
-                    continue
-                ext = Path(entry).suffix.lower()
-                if ext in AUDIO_EXTENSIONS:
-                    results.append(entry)
-            return results
+            return self._list_audio_files(self._watch_path, "")
         except Exception:
             log.exception("Failed to list WebDAV directory", path=self._watch_path)
             return []
 
+    def _list_audio_files(self, remote_dir: str, prefix: str) -> list[str]:
+        results = []
+        for entry in self._client.list(remote_dir):
+            name = entry.rstrip("/")
+            if entry.endswith("/"):
+                results += self._list_audio_files(
+                    str(Path(remote_dir) / name), f"{prefix}{name}/"
+                )
+            elif Path(entry).suffix.lower() in AUDIO_EXTENSIONS:
+                results.append(f"{prefix}{entry}")
+        return results
+
+    @staticmethod
+    def _sidecar(audio_filename: str, suffix: str) -> str:
+        """Path of the sidecar for `audio_filename`, in the same folder as the audio file."""
+        return str(Path(audio_filename).with_suffix(suffix))
+
     def done_marker_exists(self, audio_filename: str) -> bool:
         """Check if a .done sidecar exists for the given audio file. Returns False on error."""
         try:
-            stem = Path(audio_filename).stem
-            marker = f"{stem}.done"
-            remote_path = str(Path(self._watch_path) / marker)
+            remote_path = str(Path(self._watch_path) / self._sidecar(audio_filename, ".done"))
             return self._client.check(remote_path)
         except Exception:
             log.exception("Failed to check done marker", filename=audio_filename)
@@ -90,16 +100,12 @@ class WebDAVClient:
 
     def create_done_marker(self, audio_filename: str) -> None:
         """Create a .done sidecar for the given audio file."""
-        stem = Path(audio_filename).stem
-        marker = f"{stem}.done"
-        self.upload_string("", marker)
+        self.upload_string("", self._sidecar(audio_filename, ".done"))
 
     def quarantined_marker_exists(self, audio_filename: str) -> bool:
         """Check if a .quarantined sidecar exists (given up after too many failures)."""
         try:
-            stem = Path(audio_filename).stem
-            marker = f"{stem}.quarantined"
-            remote_path = str(Path(self._watch_path) / marker)
+            remote_path = str(Path(self._watch_path) / self._sidecar(audio_filename, ".quarantined"))
             return self._client.check(remote_path)
         except Exception:
             log.exception("Failed to check quarantine marker", filename=audio_filename)
@@ -113,8 +119,7 @@ class WebDAVClient:
         that cannot succeed doesn't re-queue forever (was ~1000x/day/file in production
         before this existed, see the 2026-09-12 incident notes in transcriber.py).
         """
-        stem = Path(audio_filename).stem
-        self.upload_string(reason, f"{stem}.quarantined")
+        self.upload_string(reason, self._sidecar(audio_filename, ".quarantined"))
 
     def get_failure_count(self, audio_filename: str) -> int:
         """Read the persisted failure count sidecar. Returns 0 if missing or unreadable.
@@ -123,8 +128,7 @@ class WebDAVClient:
         (redeploy, pull, crash) -- otherwise every restart would reset every file's count
         to 0 and a permanently-broken file would never actually reach quarantine.
         """
-        stem = Path(audio_filename).stem
-        remote_path = str(Path(self._watch_path) / f"{stem}.failcount")
+        remote_path = str(Path(self._watch_path) / self._sidecar(audio_filename, ".failcount"))
         if not self._client.check(remote_path):
             return 0
         fd, tmp_path = tempfile.mkstemp()
@@ -146,14 +150,12 @@ class WebDAVClient:
     def record_failure(self, audio_filename: str) -> int:
         """Increment and persist the failure count sidecar for a file. Returns the new count."""
         count = self.get_failure_count(audio_filename) + 1
-        stem = Path(audio_filename).stem
-        self.upload_string(str(count), f"{stem}.failcount")
+        self.upload_string(str(count), self._sidecar(audio_filename, ".failcount"))
         return count
 
     def clear_failure_count(self, audio_filename: str) -> None:
         """Remove the failure count sidecar, e.g. after an eventual success."""
-        stem = Path(audio_filename).stem
-        remote_path = str(Path(self._watch_path) / f"{stem}.failcount")
+        remote_path = str(Path(self._watch_path) / self._sidecar(audio_filename, ".failcount"))
         try:
             if self._client.check(remote_path):
                 self._client.clean(remote_path)

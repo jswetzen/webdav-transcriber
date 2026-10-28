@@ -336,3 +336,40 @@ class TestProcessBatch:
             mock_transcribe.assert_not_called()
 
         webdav.download.assert_not_called()
+
+
+class TestSubfolders:
+    def test_outputs_and_markers_land_beside_the_audio(self, minimal_config, mock_segments):
+        webdav = make_mock_webdav()
+        notifier = MagicMock()
+
+        def fake_transcribe(local_paths, config):
+            return fake_batch_result(local_paths, mock_segments)
+
+        with patch(
+            "whisperwebdav.watcher.transcribe_batch", side_effect=fake_transcribe
+        ):
+            process_batch(["Call recordings/x.amr"], webdav, minimal_config, notifier)
+
+        upload_names = [c[0][1] for c in webdav.upload_string.call_args_list]
+        assert upload_names and all(n.startswith("Call recordings/") for n in upload_names)
+        webdav.create_done_marker.assert_called_once_with("Call recordings/x.amr")
+
+    def test_same_name_in_two_folders_does_not_collide_locally(
+        self, minimal_config, mock_segments
+    ):
+        webdav = make_mock_webdav()
+        notifier = MagicMock()
+        seen = []
+
+        def fake_transcribe(local_paths, config):
+            seen.extend(local_paths)
+            return fake_batch_result(local_paths, mock_segments)
+
+        with patch(
+            "whisperwebdav.watcher.transcribe_batch", side_effect=fake_transcribe
+        ):
+            process_batch(["a/x.amr", "b/x.amr"], webdav, minimal_config, notifier)
+
+        assert len(set(seen)) == 2
+        assert len({Path(p).parent for p in seen}) == 1

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import os
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from urllib.parse import urlparse
 
 import structlog
 from webdav3.client import Client
@@ -15,6 +16,9 @@ log = structlog.get_logger(__name__)
 class WebDAVClient:
     def __init__(self, config: Config) -> None:
         self._watch_path = config.webdav_watch_path
+        # Last path segment of the base URL (e.g. "webdav" for .../public.php/webdav): what
+        # servers echo back as the self-entry when listing the share root.
+        self._root_name = PurePosixPath(urlparse(config.webdav_url).path).name
 
         options: dict[str, str] = {
             "webdav_hostname": config.webdav_url,
@@ -54,9 +58,21 @@ class WebDAVClient:
         for entry in self._client.list(remote_dir):
             name = entry.rstrip("/")
             if entry.endswith("/"):
-                results += self._list_audio_files(
-                    str(Path(remote_dir) / name), f"{prefix}{name}/"
-                )
+                # Some servers (ownCloud public links) list the directory itself as a child,
+                # because webdav3 compares hrefs against a path that lacks the URL prefix.
+                # Recursing into it would 404 the whole crawl.
+                if name == (Path(remote_dir).name or self._root_name):
+                    continue
+                # Hidden folders are the client's bookkeeping, e.g. .trash/ holds deleted notes.
+                if name.startswith("."):
+                    continue
+                try:
+                    results += self._list_audio_files(
+                        str(Path(remote_dir) / name), f"{prefix}{name}/"
+                    )
+                except Exception:
+                    # One unreadable folder must not hide every other file on the share.
+                    log.exception("Failed to list WebDAV subfolder", path=f"{remote_dir}/{name}")
             elif Path(entry).suffix.lower() in AUDIO_EXTENSIONS:
                 results.append(f"{prefix}{entry}")
         return results

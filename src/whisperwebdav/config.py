@@ -6,7 +6,7 @@ from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 AUDIO_EXTENSIONS: frozenset[str] = frozenset(
-    {".mp3", ".wav", ".m4a", ".ogg", ".flac", ".opus", ".aac"}
+    {".mp3", ".wav", ".m4a", ".ogg", ".flac", ".opus", ".aac", ".amr", ".awb"}
 )
 
 LANGUAGE_TOKENIZER_MAP: dict[str, str] = {

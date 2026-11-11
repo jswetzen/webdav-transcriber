@@ -29,13 +29,12 @@ from starlette.routing import get_route_path
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from .config import Config
-from .engine import transcribe_one
+from .isolated import JobStalled, QueueFull, QueueTimeout, transcribe_isolated
+from .models import ModelsUnavailable, ensure_models
 from .formatter import full_text, to_srt, to_vtt
 from .tts import TTSError, available_voices, kokoro_files_present, synthesize, synthesize_stream
 
 log = structlog.get_logger(__name__)
-
-_TIMESTAMP_FORMATS = frozenset({"srt", "vtt", "verbose_json"})
 
 # /v1/audio/speech takes a small JSON body (TTS_MAX_INPUT_CHARS bounds the text), so it gets a
 # fixed, much tighter cap than the multipart upload endpoint.
@@ -242,12 +241,15 @@ def create_app(config: Config) -> FastAPI:
 
         # Per-request language override (falls back to the server's configured language).
         req_config = config.model_copy(update={"language": language}) if language else config
-        with_timestamps = response_format in _TIMESTAMP_FORMATS
-
         try:
-            segments = await run_in_threadpool(
-                transcribe_one, audio_path, req_config, with_timestamps=with_timestamps
-            )
+            segments = await run_in_threadpool(transcribe_isolated, audio_path, req_config)
+        except (QueueFull, QueueTimeout) as exc:
+            raise HTTPException(
+                status_code=503, detail=str(exc), headers={"Retry-After": "60"}
+            ) from exc
+        except JobStalled as exc:
+            log.error("Transcription stalled", filename=file.filename)
+            raise HTTPException(status_code=504, detail=str(exc)) from exc
         except Exception as exc:
             log.exception("Transcription failed", filename=file.filename)
             raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -382,4 +384,11 @@ def main() -> None:
         device=config.device,
         auth=bool(config.api_key),
     )
+    # Fail here, at startup, on a broken or incomplete model cache, not on the first request.
+    # ensure_models also pins HF_HUB_OFFLINE for this process and its job children.
+    try:
+        ensure_models(config)
+    except ModelsUnavailable as exc:
+        log.error("Model check failed; refusing to start", error=str(exc))
+        raise SystemExit(1) from exc
     uvicorn.run(create_app(config), host=config.server_host, port=config.server_port)

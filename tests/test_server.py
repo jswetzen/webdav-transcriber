@@ -21,8 +21,8 @@ FAKE_SEGMENTS = [
 def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     # The server needs no WebDAV config; patch out the GPU engine entirely.
     monkeypatch.setattr(
-        "whisperwebdav.server.transcribe_one",
-        lambda audio_path, config, with_timestamps=True: list(FAKE_SEGMENTS),
+        "whisperwebdav.server.transcribe_isolated",
+        lambda audio_path, config, **_: list(FAKE_SEGMENTS),
     )
     return TestClient(create_app(Config()))
 
@@ -89,11 +89,11 @@ def test_transcribe_bad_format(client: TestClient) -> None:
 def test_language_override_passed_through(monkeypatch: pytest.MonkeyPatch) -> None:
     captured = {}
 
-    def fake(audio_path, config, with_timestamps=True):
+    def fake(audio_path, config, **_):
         captured["language"] = config.language
         return list(FAKE_SEGMENTS)
 
-    monkeypatch.setattr("whisperwebdav.server.transcribe_one", fake)
+    monkeypatch.setattr("whisperwebdav.server.transcribe_isolated", fake)
     c = TestClient(create_app(Config(language="sv")))
     c.post(
         "/v1/audio/transcriptions",
@@ -108,7 +108,7 @@ def test_language_override_passed_through(monkeypatch: pytest.MonkeyPatch) -> No
 
 def test_auth_required_when_key_set(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "whisperwebdav.server.transcribe_one",
+        "whisperwebdav.server.transcribe_isolated",
         lambda *a, **k: list(FAKE_SEGMENTS),
     )
     c = TestClient(create_app(Config(api_key="secret")))
@@ -321,7 +321,7 @@ def test_list_models_omits_kokoro_when_files_absent(client: TestClient) -> None:
 def _keyed_client(monkeypatch: pytest.MonkeyPatch, **cfg) -> TestClient:
     monkeypatch.setattr("whisperwebdav.server.kokoro_files_present", lambda config: False)
     monkeypatch.setattr(
-        "whisperwebdav.server.transcribe_one",
+        "whisperwebdav.server.transcribe_isolated",
         lambda *a, **k: list(FAKE_SEGMENTS),
     )
     return TestClient(create_app(Config(**cfg)))
@@ -395,10 +395,10 @@ def test_unauthenticated_large_upload_never_reaches_handler(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def boom(*a, **k):  # pragma: no cover - must not be called
-        raise AssertionError("transcribe_one reached without auth")
+        raise AssertionError("transcribe_isolated reached without auth")
 
     c = _keyed_client(monkeypatch, api_key="secret")
-    monkeypatch.setattr("whisperwebdav.server.transcribe_one", boom)
+    monkeypatch.setattr("whisperwebdav.server.transcribe_isolated", boom)
     resp = c.post(
         "/v1/audio/transcriptions",
         files={"file": ("big.wav", b"\0" * (5 * 1024 * 1024))},
@@ -701,3 +701,27 @@ def test_unauthenticated_upload_never_calls_receive_full_app(
     asyncio.run(app(scope, receive, send))
     assert sent[0]["status"] == 401
     assert not received
+
+
+def test_queue_full_is_503_with_retry_after(monkeypatch: pytest.MonkeyPatch) -> None:
+    from whisperwebdav.isolated import QueueFull
+
+    def busy(*a, **k):
+        raise QueueFull("1 transcription(s) already waiting")
+
+    monkeypatch.setattr("whisperwebdav.server.transcribe_isolated", busy)
+    c = TestClient(create_app(Config()))
+    r = _post(c, "json")
+    assert r.status_code == 503
+    assert r.headers["Retry-After"] == "60"
+
+
+def test_job_stalled_is_504(monkeypatch: pytest.MonkeyPatch) -> None:
+    from whisperwebdav.isolated import JobStalled
+
+    def slow(*a, **k):
+        raise JobStalled("no progress for 300s")
+
+    monkeypatch.setattr("whisperwebdav.server.transcribe_isolated", slow)
+    c = TestClient(create_app(Config()))
+    assert _post(c, "json").status_code == 504

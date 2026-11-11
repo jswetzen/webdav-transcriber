@@ -33,7 +33,7 @@ import structlog
 from starlette.concurrency import run_in_threadpool
 
 from .config import Config
-from .gpu_lock import GPU_LOCK
+from .gpu_lock import GPU_LOCK, acquire_gpu, gpu_slot
 
 log = structlog.get_logger(__name__)
 
@@ -184,7 +184,7 @@ def synthesize(
 
     voice = voice or config.tts_default_voice
 
-    with GPU_LOCK:
+    with gpu_slot():
         kokoro = _load_kokoro(config)
         voices = available_voices(config)
         if voice not in voices:
@@ -243,7 +243,7 @@ async def synthesize_stream(
 
     voice = voice or config.tts_default_voice
 
-    await run_in_threadpool(GPU_LOCK.acquire)
+    await run_in_threadpool(acquire_gpu)
     try:
         kokoro = _load_kokoro(config)
         voices = available_voices(config)

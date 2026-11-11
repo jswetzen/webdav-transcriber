@@ -74,6 +74,12 @@ class Config(BaseSettings):
     cache_dir: str = "/app/models"
     gpu_enabled: bool = False
     gpu_idle_release_seconds: int = 120
+    # Server-side transcription gate (isolated.py). Jobs are killed on stalled progress, not length.
+    # max_job_seconds is a backstop for a GPU hang that spins the CPU, which looks like progress.
+    transcribe_max_waiting: int = Field(default=2, ge=0)
+    transcribe_queue_wait_seconds: int = Field(default=300, gt=0)
+    transcribe_stall_seconds: int = Field(default=300, gt=0)
+    transcribe_max_job_seconds: int = Field(default=21600, gt=0)
 
     # Text-to-speech (Kokoro), see tts.py. Model files aren't published on an index kokoro-onnx
     # can fetch itself — download kokoro-v1.0.onnx / voices-v1.0.bin from

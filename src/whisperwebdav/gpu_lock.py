@@ -13,5 +13,53 @@ doesn't have to reach into another module's "private" underscore-prefixed name t
 from __future__ import annotations
 
 import threading
+import time
+from contextlib import contextmanager
+from collections.abc import Iterator
 
 GPU_LOCK = threading.Lock()
+
+# Set when a killed GPU job would not exit (a D-state process in the driver). GPU_LOCK is then
+# never released, so the device is unusable until restart; callers check this before waiting.
+_wedged = False
+
+
+class GpuUnavailable(RuntimeError):
+    """The GPU is wedged and the service must be restarted."""
+
+
+def mark_wedged() -> None:
+    global _wedged
+    _wedged = True
+
+
+def is_wedged() -> bool:
+    return _wedged
+
+
+def acquire_gpu(timeout: float | None = None) -> bool:
+    """Take GPU_LOCK, waiting in 1 s steps so a wedge is noticed. False on timeout.
+
+    A plain blocking acquire would hang forever once the holder is wedged, so a waiter could
+    never reach its own error path.
+    """
+    if _wedged:
+        raise GpuUnavailable("a previous GPU job could not be killed; restart the service")
+    deadline = None if timeout is None else time.monotonic() + timeout
+    while True:
+        step = 1.0 if deadline is None else max(0.0, min(1.0, deadline - time.monotonic()))
+        if GPU_LOCK.acquire(timeout=step):
+            return True
+        if _wedged:
+            raise GpuUnavailable("a previous GPU job could not be killed; restart the service")
+        if deadline is not None and time.monotonic() >= deadline:
+            return False
+
+
+@contextmanager
+def gpu_slot() -> Iterator[None]:
+    acquire_gpu()
+    try:
+        yield
+    finally:
+        GPU_LOCK.release()

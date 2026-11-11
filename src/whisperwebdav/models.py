@@ -154,11 +154,15 @@ def _reconvert(config: Config) -> None:
     ct2 = _ct2_dir(config)
     stale = ct2.with_name(ct2.name + ".stale")
     shutil.rmtree(stale, ignore_errors=True)
-    if ct2.exists():
-        ct2.rename(stale)
+    try:
+        if ct2.exists():
+            ct2.rename(stale)
+    except OSError as exc:
+        raise ModelsUnavailable(f"cannot move {ct2} aside: {exc}") from exc
     try:
         _run_child(["convert", config.transcription_model, config.cache_dir])
-    except Exception:
+    except BaseException:
+        # BaseException, not Exception: a SIGINT mid-conversion must not leave a partial dir.
         shutil.rmtree(ct2, ignore_errors=True)
         if stale.exists():
             stale.rename(ct2)

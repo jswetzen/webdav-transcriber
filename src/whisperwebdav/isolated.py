@@ -18,7 +18,7 @@ from pathlib import Path
 import structlog
 
 from .config import Config
-from .gpu_lock import GPU_LOCK, GpuUnavailable, is_wedged, mark_wedged
+from .gpu_lock import GPU_LOCK, GpuUnavailable, acquire_gpu, is_wedged, mark_wedged
 
 log = structlog.get_logger(__name__)
 
@@ -129,13 +129,11 @@ def transcribe_isolated(
                 raise QueueFull(f"{_waiting} transcription(s) already waiting for the GPU")
             _waiting += 1
         try:
-            acquired = GPU_LOCK.acquire(timeout=config.transcribe_queue_wait_seconds)
+            acquired = acquire_gpu(config.transcribe_queue_wait_seconds)
         finally:
             with _state_lock:
                 _waiting -= 1
     if not acquired:
-        if is_wedged():
-            raise GpuUnavailable("a previous job could not be killed; restart the service")
         raise QueueTimeout(
             f"no GPU slot within {config.transcribe_queue_wait_seconds}s; try again later"
         )

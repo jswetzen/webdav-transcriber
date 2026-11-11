@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -200,3 +201,13 @@ def test_child_that_survives_sigkill_marks_gpu_unusable(monkeypatch: pytest.Monk
     assert GPU_LOCK.locked(), "the wedged GPU lock must never be released"
     with pytest.raises(GpuUnavailable):
         transcribe_isolated("/tmp/a.wav", _cfg(), argv_prefix=argv)
+
+
+def test_parked_waiter_is_released_with_gpu_unavailable_when_gpu_wedges() -> None:
+    # A waiter already blocked on the lock must notice the wedge, not hang on the holder forever.
+    GPU_LOCK.acquire()
+    threading.Timer(1.0, gpu_lock.mark_wedged).start()
+    started = time.monotonic()
+    with pytest.raises(GpuUnavailable):
+        gpu_lock.acquire_gpu()
+    assert time.monotonic() - started < 5

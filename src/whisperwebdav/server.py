@@ -29,7 +29,7 @@ from starlette.routing import get_route_path
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from .config import Config
-from .isolated import JobStalled, QueueFull, QueueTimeout, transcribe_isolated
+from .isolated import GpuUnavailable, JobStalled, QueueFull, QueueTimeout, transcribe_isolated
 from .models import ModelsUnavailable, ensure_models
 from .formatter import full_text, to_srt, to_vtt
 from .tts import TTSError, available_voices, kokoro_files_present, synthesize, synthesize_stream
@@ -243,7 +243,7 @@ def create_app(config: Config) -> FastAPI:
         req_config = config.model_copy(update={"language": language}) if language else config
         try:
             segments = await run_in_threadpool(transcribe_isolated, audio_path, req_config)
-        except (QueueFull, QueueTimeout) as exc:
+        except (QueueFull, QueueTimeout, GpuUnavailable) as exc:
             raise HTTPException(
                 status_code=503, detail=str(exc), headers={"Retry-After": "60"}
             ) from exc

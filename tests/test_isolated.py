@@ -12,6 +12,7 @@ from whisperwebdav import isolated
 from whisperwebdav.config import Config
 from whisperwebdav.gpu_lock import GPU_LOCK
 from whisperwebdav.isolated import (
+    GpuUnavailable,
     JobFailed,
     JobStalled,
     QueueFull,
@@ -26,8 +27,13 @@ OK_SCRIPT = (
 
 
 @pytest.fixture(autouse=True)
-def fast_polling(monkeypatch: pytest.MonkeyPatch) -> None:
+def fast_polling(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(isolated, "_POLL_SECONDS", 0.2)
+    monkeypatch.setattr(isolated, "_REAP_SECONDS", 5.0)
+    yield
+    isolated._gpu_wedged = False
+    if GPU_LOCK.locked():
+        GPU_LOCK.release()
 
 
 def _cfg(**kw) -> Config:
@@ -165,3 +171,32 @@ def test_waiting_for_busy_gpu_times_out() -> None:
             )
     finally:
         GPU_LOCK.release()
+
+
+def test_job_past_max_seconds_is_killed_even_while_progressing() -> None:
+    script = (
+        "import time\n"
+        "for i in range(100):\n"
+        "    print('step', i, flush=True)\n"
+        "    time.sleep(0.2)\n"
+    )
+    with pytest.raises(JobStalled, match="longer than"):
+        transcribe_isolated(
+            "/tmp/a.wav",
+            _cfg(transcribe_stall_seconds=100, transcribe_max_job_seconds=1),
+            argv_prefix=[sys.executable, "-c", script],
+        )
+    assert _lock_is_free()
+
+
+def test_child_that_survives_sigkill_marks_gpu_unusable(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Stand-in for a D-state process: the kill is suppressed, so the reap cannot finish.
+    monkeypatch.setattr(isolated, "_REAP_SECONDS", 0.1)
+    monkeypatch.setattr(isolated, "_terminate_group", lambda proc: None)
+    argv = [sys.executable, "-c", "import time; time.sleep(3)"]
+    with pytest.raises(JobStalled):
+        transcribe_isolated("/tmp/a.wav", _cfg(transcribe_stall_seconds=1), argv_prefix=argv)
+    assert isolated._gpu_wedged
+    assert GPU_LOCK.locked(), "the wedged GPU lock must never be released"
+    with pytest.raises(GpuUnavailable):
+        transcribe_isolated("/tmp/a.wav", _cfg(), argv_prefix=argv)

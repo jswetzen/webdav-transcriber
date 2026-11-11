@@ -1,9 +1,6 @@
-"""Child-process entry point for one transcription job: `python -m whisperwebdav.worker`.
+"""One transcription job, run as a child process by isolated.py. Argv: AUDIO RESULT LANGUAGE.
 
-isolated.py runs each job here so that a stuck or failed job can be killed as a whole process
-group. Exiting the process is the only reliable way to release everything a job allocated
-(the model, CUDA context, easyaligner's worker processes). Argv: AUDIO_PATH RESULT_PATH LANGUAGE.
-The result is written to RESULT_PATH as JSON, not stdout, because the logger writes to stdout.
+Results go to RESULT as JSON, not stdout, because the logger writes to stdout.
 """
 
 from __future__ import annotations

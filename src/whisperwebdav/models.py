@@ -1,13 +1,7 @@
-"""Startup model check: make sure everything the server needs is on disk, then go offline.
+"""Startup model check: fetch or convert missing models in children, then pin offline mode.
 
-Runs once in server main(), before uvicorn binds. Anything missing is fetched (or converted to
-CTranslate2) in a child process, so the download and conversion memory is released afterwards.
-Then HF_HUB_OFFLINE=1 is set in this process's environment. Every later model load, and every
-child spawned from here, inherits it, so a stalled network can't hang a transcription. A broken
-or incomplete cache fails here at startup, not on the first request.
-
-This module must not import huggingface_hub or transformers at top level: they read
-HF_HUB_OFFLINE once, when first imported, and the parent must set it before that happens.
+The parent sets HF_HUB_OFFLINE here so every later model load and job child inherits it. Keep
+huggingface_hub and transformers out of top-level imports: they read the variable at import time.
 """
 
 from __future__ import annotations
@@ -24,8 +18,7 @@ from .config import Config
 
 log = structlog.get_logger(__name__)
 
-# Files the transcription processor needs (tokenizer + feature extractor), and the ones the
-# CTranslate2 converter reads. Named exactly so a download never pulls the ONNX variants.
+# Named exactly so a download never pulls the ONNX variants.
 _TRANSCRIPTION_FILES = (
     "config.json",
     "generation_config.json",
@@ -39,7 +32,12 @@ _TRANSCRIPTION_FILES = (
     "normalizer.json",
 )
 _TRANSCRIPTION_WEIGHTS = ("model.safetensors",)  # only needed to convert to CTranslate2
-_TRANSCRIPTION_REQUIRED = ("preprocessor_config.json", "vocab.json", "merges.txt")
+_TRANSCRIPTION_REQUIRED = (
+    "preprocessor_config.json",
+    "vocab.json",
+    "merges.txt",
+    "tokenizer_config.json",
+)
 
 _EMISSIONS_FILES = (
     "config.json",
@@ -49,7 +47,13 @@ _EMISSIONS_FILES = (
     "special_tokens_map.json",
     "model.safetensors",
 )
-_EMISSIONS_REQUIRED = ("config.json", "preprocessor_config.json", "vocab.json", "model.safetensors")
+_EMISSIONS_REQUIRED = (
+    "config.json",
+    "preprocessor_config.json",
+    "vocab.json",
+    "tokenizer_config.json",
+    "model.safetensors",
+)
 
 # Ensures (and converts) an HF repo's files are available without network access.
 _CT2_FILES = ("model.bin", "config.json", "vocabulary.json", "preprocessor_config.json")
@@ -68,8 +72,7 @@ def _snapshot_has(cache_dir: str, repo: str, filename: str) -> bool:
 
 
 def _ct2_dir(config: Config) -> Path:
-    # Same naming rule as easytranscriber.utils.hf_to_ct2_converter (keeps a numeric suffix such
-    # as "distil-large-v3.5"), so the directory checked here is the one the converter writes.
+    # Mirrors easytranscriber's converter naming, which keeps a numeric suffix (e.g. "-3.5").
     p = Path(config.transcription_model)
     name = p.stem + p.suffix if p.suffix and p.suffix[1:].isdigit() else p.stem
     return Path(config.cache_dir) / "ct2" / name
@@ -92,7 +95,7 @@ def missing_models(config: Config) -> list[str]:
 
 
 def _network_env() -> dict[str, str]:
-    """Environment for a child that is allowed to reach the Hub. HF_TOKEN passes through."""
+    """Environment for a child that may reach the Hub."""
     env = {k: v for k, v in os.environ.items() if k not in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")}
     env["HF_HUB_OFFLINE"] = "0"
     return env
@@ -113,9 +116,9 @@ def pin_offline() -> None:
 
 
 def ensure_models(config: Config) -> None:
-    """Fetch/convert whatever is missing, verify, then pin offline mode. Raises ModelsUnavailable."""
+    """Fetch or convert what is missing, verify, then pin offline. Raises ModelsUnavailable."""
     if config.hf_token:
-        # Config reads .env too, which os.environ does not, so pass the token down explicitly.
+        # Config also reads .env, which os.environ does not, so export the token explicitly.
         os.environ["HF_TOKEN"] = config.hf_token
     missing = missing_models(config)
     if missing:
@@ -133,8 +136,7 @@ def ensure_models(config: Config) -> None:
                 ",".join(_EMISSIONS_FILES),
             ])
         if ct2_missing:
-            # hf_to_ct2_converter reuses an existing directory even when it is half-written
-            # (a killed conversion), so clear it first or startup would fail on every restart.
+            # The converter reuses a half-written directory from a killed run; clear it first.
             shutil.rmtree(_ct2_dir(config), ignore_errors=True)
             _run_child(["convert", config.transcription_model, config.cache_dir])
         still = missing_models(config)
@@ -161,8 +163,7 @@ def _child_main(argv: list[str]) -> int:
         from easytranscriber.utils import hf_to_ct2_converter  # type: ignore[import]
 
         _, model, cache_dir = argv
-        # The converter loads the HF weights from the default hub cache otherwise, so the
-        # download done into cache_dir above would be wasted. Set before the hub is imported.
+        # Point the converter at the cache the download wrote to. Must precede the hub import.
         os.environ["HF_HUB_CACHE"] = cache_dir
         hf_to_ct2_converter(model, cache_dir=cache_dir)
         return 0

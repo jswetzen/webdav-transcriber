@@ -1,6 +1,6 @@
 """In-process transcription engine: the single serialization point for the GPU.
 
-The model owner (server.py) and the standalone poll loop both go through transcribe_one()
+The model owner (server.py, via isolated.py's worker processes) and the standalone poll loop go through transcribe_one()
 under a process-global lock, so only one transcription touches the GPU at a time. With a
 single 12 GB card shared by other consumers (e.g. an LLM, or tts.py's Kokoro synthesis —
 see gpu_lock.py), serializing here is what prevents two concurrent jobs from each loading a

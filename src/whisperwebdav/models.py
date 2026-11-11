@@ -13,6 +13,7 @@ HF_HUB_OFFLINE once, when first imported, and the parent must set it before that
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -67,8 +68,11 @@ def _snapshot_has(cache_dir: str, repo: str, filename: str) -> bool:
 
 
 def _ct2_dir(config: Config) -> Path:
-    # Same naming as easytranscriber.utils.hf_to_ct2_converter: the repo's last path component.
-    return Path(config.cache_dir) / "ct2" / Path(config.transcription_model).stem
+    # Same naming rule as easytranscriber.utils.hf_to_ct2_converter (keeps a numeric suffix such
+    # as "distil-large-v3.5"), so the directory checked here is the one the converter writes.
+    p = Path(config.transcription_model)
+    name = p.stem + p.suffix if p.suffix and p.suffix[1:].isdigit() else p.stem
+    return Path(config.cache_dir) / "ct2" / name
 
 
 def missing_models(config: Config) -> list[str]:
@@ -110,6 +114,9 @@ def pin_offline() -> None:
 
 def ensure_models(config: Config) -> None:
     """Fetch/convert whatever is missing, verify, then pin offline mode. Raises ModelsUnavailable."""
+    if config.hf_token:
+        # Config reads .env too, which os.environ does not, so pass the token down explicitly.
+        os.environ["HF_TOKEN"] = config.hf_token
     missing = missing_models(config)
     if missing:
         log.warning("Models missing from cache; fetching before startup", missing=missing)
@@ -126,6 +133,9 @@ def ensure_models(config: Config) -> None:
                 ",".join(_EMISSIONS_FILES),
             ])
         if ct2_missing:
+            # hf_to_ct2_converter reuses an existing directory even when it is half-written
+            # (a killed conversion), so clear it first or startup would fail on every restart.
+            shutil.rmtree(_ct2_dir(config), ignore_errors=True)
             _run_child(["convert", config.transcription_model, config.cache_dir])
         still = missing_models(config)
         if still:
@@ -151,6 +161,9 @@ def _child_main(argv: list[str]) -> int:
         from easytranscriber.utils import hf_to_ct2_converter  # type: ignore[import]
 
         _, model, cache_dir = argv
+        # The converter loads the HF weights from the default hub cache otherwise, so the
+        # download done into cache_dir above would be wasted. Set before the hub is imported.
+        os.environ["HF_HUB_CACHE"] = cache_dir
         hf_to_ct2_converter(model, cache_dir=cache_dir)
         return 0
     raise SystemExit(f"unknown model step: {argv[:1]}")

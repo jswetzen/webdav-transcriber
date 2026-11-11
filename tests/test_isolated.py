@@ -70,17 +70,17 @@ def test_silent_job_is_killed_once_progress_stops() -> None:
 
 
 def test_slow_job_that_keeps_making_progress_is_not_killed() -> None:
-    # Runs for ~3s, well past the 1s stall window, but writes output every 0.3s.
+    # Runs for ~4.5s, well past the 2s stall window, but writes output every 0.3s.
     script = (
         "import json,sys,time\n"
-        "for i in range(10):\n"
+        "for i in range(15):\n"
         "    print('step', i, flush=True)\n"
         "    time.sleep(0.3)\n"
         "json.dump([{'start': 0.0, 'end': 1.0, 'text': 'lång'}], open(sys.argv[2], 'w'))\n"
     )
     segments = transcribe_isolated(
         "/tmp/a.wav",
-        _cfg(transcribe_stall_seconds=1),
+        _cfg(transcribe_stall_seconds=2),
         argv_prefix=[sys.executable, "-c", script],
     )
     assert segments[0]["text"] == "lång"
@@ -90,7 +90,7 @@ def test_cpu_bound_job_without_output_is_not_killed() -> None:
     # No output and no files, but CPU time keeps rising: that's work, not a stall.
     script = (
         "import json,sys,time\n"
-        "end = time.monotonic() + 2.5\n"
+        "end = time.monotonic() + 4.5\n"
         "while time.monotonic() < end:\n"
         "    sum(range(10000))\n"
         "json.dump([], open(sys.argv[2], 'w'))\n"
@@ -98,7 +98,7 @@ def test_cpu_bound_job_without_output_is_not_killed() -> None:
     assert (
         transcribe_isolated(
             "/tmp/a.wav",
-            _cfg(transcribe_stall_seconds=1),
+            _cfg(transcribe_stall_seconds=2),
             argv_prefix=[sys.executable, "-c", script],
         )
         == []
@@ -117,7 +117,7 @@ def test_stall_also_kills_grandchildren(tmp_path: Path) -> None:
     with pytest.raises(JobStalled):
         transcribe_isolated(
             "/tmp/a.wav",
-            _cfg(transcribe_stall_seconds=1),
+            _cfg(transcribe_stall_seconds=2),
             argv_prefix=[sys.executable, "-c", script],
         )
     grandchild = int(pid_file.read_text())

@@ -92,11 +92,15 @@ def _tree_bytes(path: Path) -> int:
 
 
 def _tail(path: Path, lines: int = 5) -> str:
+    """Last few lines of the child's log, read from the end so a chatty child can't OOM us."""
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, fh.tell() - 8192))
+            text = fh.read().decode("utf-8", errors="replace")
     except OSError:
         return ""
-    return " | ".join(text.strip().splitlines()[-lines:])
+    return " | ".join(text.strip().splitlines()[-lines:])[-2000:]
 
 
 def transcribe_isolated(

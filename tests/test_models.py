@@ -136,3 +136,23 @@ def test_child_environment_reenables_network_only_for_the_child(
     assert env["HF_HUB_OFFLINE"] == "0"
     assert "TRANSFORMERS_OFFLINE" not in env
     assert os.environ["HF_HUB_OFFLINE"] == "1"
+
+
+def test_partial_ct2_directory_is_cleared_before_reconverting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A killed conversion leaves a half-written dir; the converter would reuse it as-is.
+    cfg = _cfg(tmp_path)
+    _populate_everything(tmp_path, cfg)
+    ct2 = tmp_path / "ct2" / "kb-whisper-large"
+    (ct2 / "model.bin").unlink()
+    seen: list[bool] = []
+
+    def fake_child(args: list[str]) -> None:
+        if args[0] == "convert":
+            seen.append(ct2.exists())
+            _ct2(tmp_path, cfg)
+
+    monkeypatch.setattr(models, "_run_child", fake_child)
+    ensure_models(cfg)
+    assert seen == [False]

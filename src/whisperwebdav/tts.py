@@ -33,7 +33,7 @@ import structlog
 from starlette.concurrency import run_in_threadpool
 
 from .config import Config
-from .gpu_lock import GPU_LOCK
+from .gpu_lock import GPU_LOCK, GpuUnavailable, is_wedged
 
 log = structlog.get_logger(__name__)
 
@@ -184,6 +184,8 @@ def synthesize(
 
     voice = voice or config.tts_default_voice
 
+    if is_wedged():
+        raise GpuUnavailable("a previous GPU job could not be killed; restart the service")
     with GPU_LOCK:
         kokoro = _load_kokoro(config)
         voices = available_voices(config)
@@ -243,6 +245,8 @@ async def synthesize_stream(
 
     voice = voice or config.tts_default_voice
 
+    if is_wedged():
+        raise GpuUnavailable("a previous GPU job could not be killed; restart the service")
     await run_in_threadpool(GPU_LOCK.acquire)
     try:
         kokoro = _load_kokoro(config)

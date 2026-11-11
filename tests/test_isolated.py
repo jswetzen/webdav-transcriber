@@ -10,9 +10,9 @@ import pytest
 
 from whisperwebdav import isolated
 from whisperwebdav.config import Config
-from whisperwebdav.gpu_lock import GPU_LOCK
+from whisperwebdav import gpu_lock
+from whisperwebdav.gpu_lock import GPU_LOCK, GpuUnavailable
 from whisperwebdav.isolated import (
-    GpuUnavailable,
     JobFailed,
     JobStalled,
     QueueFull,
@@ -31,7 +31,7 @@ def fast_polling(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(isolated, "_POLL_SECONDS", 0.2)
     monkeypatch.setattr(isolated, "_REAP_SECONDS", 5.0)
     yield
-    isolated._gpu_wedged = False
+    gpu_lock._wedged = False
     if GPU_LOCK.locked():
         GPU_LOCK.release()
 
@@ -196,7 +196,7 @@ def test_child_that_survives_sigkill_marks_gpu_unusable(monkeypatch: pytest.Monk
     argv = [sys.executable, "-c", "import time; time.sleep(3)"]
     with pytest.raises(JobStalled):
         transcribe_isolated("/tmp/a.wav", _cfg(transcribe_stall_seconds=1), argv_prefix=argv)
-    assert isolated._gpu_wedged
+    assert gpu_lock.is_wedged()
     assert GPU_LOCK.locked(), "the wedged GPU lock must never be released"
     with pytest.raises(GpuUnavailable):
         transcribe_isolated("/tmp/a.wav", _cfg(), argv_prefix=argv)

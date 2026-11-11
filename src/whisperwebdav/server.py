@@ -29,7 +29,8 @@ from starlette.routing import get_route_path
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from .config import Config
-from .isolated import GpuUnavailable, JobStalled, QueueFull, QueueTimeout, transcribe_isolated
+from .gpu_lock import GpuUnavailable
+from .isolated import JobStalled, QueueFull, QueueTimeout, transcribe_isolated
 from .models import ModelsUnavailable, ensure_models
 from .formatter import full_text, to_srt, to_vtt
 from .tts import TTSError, available_voices, kokoro_files_present, synthesize, synthesize_stream

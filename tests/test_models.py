@@ -156,3 +156,10 @@ def test_partial_ct2_directory_is_cleared_before_reconverting(
     monkeypatch.setattr(models, "_run_child", fake_child)
     ensure_models(cfg)
     assert seen == [False]
+
+
+def test_empty_transcription_model_is_refused_before_touching_the_cache(tmp_path: Path) -> None:
+    cfg = Config(cache_dir=str(tmp_path), transcription_model="")
+    with pytest.raises(ModelsUnavailable, match="empty"):
+        ensure_models(cfg)
+    assert not (tmp_path / "ct2").exists()

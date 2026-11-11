@@ -15,3 +15,20 @@ from __future__ import annotations
 import threading
 
 GPU_LOCK = threading.Lock()
+
+# Set when a killed GPU job would not exit (a D-state process in the driver). GPU_LOCK is then
+# never released, so the device is unusable until restart; callers check this before waiting.
+_wedged = False
+
+
+class GpuUnavailable(RuntimeError):
+    """The GPU is wedged and the service must be restarted."""
+
+
+def mark_wedged() -> None:
+    global _wedged
+    _wedged = True
+
+
+def is_wedged() -> bool:
+    return _wedged

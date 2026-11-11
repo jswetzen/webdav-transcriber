@@ -1,7 +1,6 @@
-"""Process-isolated transcription for the HTTP server.
+"""Process-isolated transcription: one child process per job, under GPU_LOCK.
 
-Each job runs in a child process (worker.py) under GPU_LOCK. Exiting the child is what frees its
-model and VRAM, and killing its process group also reaps easyaligner's worker processes.
+Exiting the child frees its model and VRAM; killing its group also reaps easyaligner's workers.
 """
 
 from __future__ import annotations
@@ -19,19 +18,17 @@ from pathlib import Path
 import structlog
 
 from .config import Config
-from .gpu_lock import GPU_LOCK
+from .gpu_lock import GPU_LOCK, GpuUnavailable, is_wedged, mark_wedged
 
 log = structlog.get_logger(__name__)
 
 # Module-level so tests can shorten them.
-_POLL_SECONDS = 5.0
+_POLL_SECONDS = 5.0  # how often progress is sampled
+_TICK_SECONDS = 0.5  # how often exit is checked, so a finished job isn't held for a sample
 _REAP_SECONDS = 30.0
 
 _state_lock = threading.Lock()
 _waiting = 0
-# Set when a killed child would not exit (a D-state process stuck in the driver). The GPU is
-# then unusable until the service restarts, so the lock is never released again.
-_gpu_wedged = False
 
 
 class QueueFull(RuntimeError):
@@ -40,10 +37,6 @@ class QueueFull(RuntimeError):
 
 class QueueTimeout(RuntimeError):
     """Waited too long for the GPU slot. Maps to HTTP 503."""
-
-
-class GpuUnavailable(RuntimeError):
-    """A previous job could not be killed, so the GPU is unusable until restart. HTTP 503."""
 
 
 class JobStalled(RuntimeError):
@@ -70,13 +63,11 @@ def _terminate_group(proc: subprocess.Popen) -> None:
 
 
 def _reap(proc: subprocess.Popen) -> None:
-    global _gpu_wedged
     try:
         proc.wait(timeout=_REAP_SECONDS)
     except subprocess.TimeoutExpired:
-        _gpu_wedged = True
-        log.error("Killed transcription child did not exit; GPU marked unusable until restart",
-                  pid=proc.pid)
+        mark_wedged()
+        log.error("Killed child did not exit; GPU unusable until restart", pid=proc.pid)
 
 
 def _group_cpu_ticks(pgid: int) -> int:
@@ -84,8 +75,7 @@ def _group_cpu_ticks(pgid: int) -> int:
     total = 0
     for stat in Path("/proc").glob("[0-9]*/stat"):
         try:
-            # Fields after the ")" that closes the comm name: state, ppid, pgrp, ..., utime (11),
-            # stime (12). Index 2 is pgrp.
+            # Fields after the ")" of the comm name: pgrp=2, utime=11, stime=12.
             fields = stat.read_text().rsplit(")", 1)[1].split()
             if int(fields[2]) == pgid:
                 total += int(fields[11]) + int(fields[12])
@@ -129,7 +119,7 @@ def transcribe_isolated(
     argv_prefix is the command to run; the default is this interpreter running worker.py.
     """
     global _waiting
-    if _gpu_wedged:
+    if is_wedged():
         raise GpuUnavailable("a previous transcription could not be killed; restart the service")
 
     acquired = GPU_LOCK.acquire(blocking=False)
@@ -144,6 +134,8 @@ def transcribe_isolated(
             with _state_lock:
                 _waiting -= 1
     if not acquired:
+        if is_wedged():
+            raise GpuUnavailable("a previous job could not be killed; restart the service")
         raise QueueTimeout(
             f"no GPU slot within {config.transcribe_queue_wait_seconds}s; try again later"
         )
@@ -155,10 +147,10 @@ def transcribe_isolated(
             result_path = tmpdir / "segments.json"
             log_path = tmpdir / "child.log"
             argv = [*prefix, audio_path, str(result_path), config.language]
-            # TMPDIR sends easytranscriber's scratch files where the progress monitor can see them.
+            # Scratch files land under tmpdir, which is what the progress monitor measures.
             env = {**os.environ, "TMPDIR": tmpdir_str}
             with open(log_path, "w", encoding="utf-8") as log_fh:
-                # New session = own process group, so the kill reaches easyaligner's workers too.
+                # Own process group, so the kill also reaches easyaligner's workers.
                 proc = subprocess.Popen(
                     argv, start_new_session=True, stdout=log_fh, stderr=subprocess.STDOUT, env=env
                 )
@@ -167,15 +159,15 @@ def transcribe_isolated(
                 finally:
                     _terminate_group(proc)
                     _reap(proc)
-            if _gpu_wedged:
+            if is_wedged():
                 raise JobStalled("transcription child could not be killed; restart the service")
             if proc.returncode != 0:
                 raise JobFailed(f"worker exited {proc.returncode}: {_tail(log_path)}")
             with open(result_path, encoding="utf-8") as fh:
                 return json.load(fh)
     finally:
-        # Keep the lock if the GPU is wedged: nothing else may touch a stuck device.
-        if not _gpu_wedged:
+        # A wedged device keeps the lock: nothing else may touch it.
+        if not is_wedged():
             GPU_LOCK.release()
 
 
@@ -185,9 +177,9 @@ def _wait_while_progressing(
     """Return once proc exits; kill it if progress stalls or the job runs past its ceiling."""
     started = time.monotonic()
     last_sig: tuple[int, int] | None = None
-    last_progress = started
+    last_progress = last_sample = started
     while not _has_exited(proc):
-        time.sleep(_POLL_SECONDS)
+        time.sleep(_TICK_SECONDS)
         now = time.monotonic()
         if now - started > config.transcribe_max_job_seconds:
             _terminate_group(proc)
@@ -196,6 +188,9 @@ def _wait_while_progressing(
             raise JobStalled(
                 f"ran longer than {config.transcribe_max_job_seconds}s; transcription was killed"
             )
+        if now - last_sample < _POLL_SECONDS:
+            continue
+        last_sample = now
         sig = (_tree_bytes(tmpdir), _group_cpu_ticks(proc.pid))
         if sig != last_sig:
             last_sig, last_progress = sig, now

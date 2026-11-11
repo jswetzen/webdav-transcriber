@@ -55,7 +55,7 @@ _EMISSIONS_REQUIRED = (
     "model.safetensors",
 )
 
-# Ensures (and converts) an HF repo's files are available without network access.
+# Files a usable CT2 directory must contain.
 _CT2_FILES = ("model.bin", "config.json", "vocabulary.json", "preprocessor_config.json")
 
 
@@ -96,7 +96,8 @@ def missing_models(config: Config) -> list[str]:
 
 def _network_env() -> dict[str, str]:
     """Environment for a child that may reach the Hub."""
-    env = {k: v for k, v in os.environ.items() if k not in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")}
+    drop = ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
+    env = {k: v for k, v in os.environ.items() if k not in drop}
     env["HF_HUB_OFFLINE"] = "0"
     return env
 
@@ -117,6 +118,9 @@ def pin_offline() -> None:
 
 def ensure_models(config: Config) -> None:
     """Fetch or convert what is missing, verify, then pin offline. Raises ModelsUnavailable."""
+    if not Path(config.transcription_model).stem:
+        # An empty name would resolve the CT2 directory to cache/ct2 itself.
+        raise ModelsUnavailable("transcription_model is empty")
     if config.hf_token:
         # Config also reads .env, which os.environ does not, so export the token explicitly.
         os.environ["HF_TOKEN"] = config.hf_token
@@ -136,14 +140,30 @@ def ensure_models(config: Config) -> None:
                 ",".join(_EMISSIONS_FILES),
             ])
         if ct2_missing:
-            # The converter reuses a half-written directory from a killed run; clear it first.
-            shutil.rmtree(_ct2_dir(config), ignore_errors=True)
-            _run_child(["convert", config.transcription_model, config.cache_dir])
+            _reconvert(config)
         still = missing_models(config)
         if still:
             raise ModelsUnavailable(f"still missing after fetch: {still}")
     pin_offline()
     log.info("Models present; running offline", cache_dir=config.cache_dir)
+
+
+def _reconvert(config: Config) -> None:
+    # The converter reuses an existing directory as-is, so a half-written one from a killed run
+    # must go. Move it aside instead of deleting it, so a failed conversion puts it back.
+    ct2 = _ct2_dir(config)
+    stale = ct2.with_name(ct2.name + ".stale")
+    shutil.rmtree(stale, ignore_errors=True)
+    if ct2.exists():
+        ct2.rename(stale)
+    try:
+        _run_child(["convert", config.transcription_model, config.cache_dir])
+    except Exception:
+        shutil.rmtree(ct2, ignore_errors=True)
+        if stale.exists():
+            stale.rename(ct2)
+        raise
+    shutil.rmtree(stale, ignore_errors=True)
 
 
 def _child_main(argv: list[str]) -> int:

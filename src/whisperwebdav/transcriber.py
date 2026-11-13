@@ -36,6 +36,24 @@ def release_gpu_memory() -> None:
         torch.cuda.ipc_collect()
 
 
+def _allow_zero_worker_prefetch() -> None:
+    """easytranscriber hardcodes prefetch_factor=2 on one DataLoader, which torch rejects when
+    num_workers=0. Drop it for zero-worker loaders only; process-wide, but only in the worker."""
+    import torch.utils.data as tud
+
+    if getattr(tud.DataLoader, "_whisper_zero_prefetch", False):
+        return
+    orig_init = tud.DataLoader.__init__
+
+    def _init(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if kwargs.get("num_workers", 0) == 0:
+            kwargs["prefetch_factor"] = None
+        orig_init(self, *args, **kwargs)
+
+    tud.DataLoader.__init__ = _init  # type: ignore[method-assign]
+    tud.DataLoader._whisper_zero_prefetch = True  # type: ignore[attr-defined]
+
+
 def _is_empty_vad_indexerror(exc: BaseException) -> bool:
     """True if `exc` is easyaligner's known crash on a file with zero detected speech.
 
@@ -84,6 +102,8 @@ def transcribe_batch(
     from easyaligner.text import load_tokenizer, text_normalizer  # type: ignore[import]
     from easytranscriber.pipelines import pipeline  # type: ignore[import]
 
+    _allow_zero_worker_prefetch()
+
     workspace = Path(tempfile.mkdtemp())
     try:
         vad_dir = workspace / "vad"
@@ -113,6 +133,11 @@ def transcribe_batch(
                 return_alignments=True,
                 device=config.device,
                 hf_token=config.hf_token or None,
+                # 0 = no DataLoader helper processes. Each helper re-imports torch and the
+                # ASR stack; with the default 2/4 they cost ~48 s of a 56 s 30 s clip on CT 117.
+                # Output identical (cmp of segment JSON). See _allow_zero_worker_prefetch.
+                num_workers_files=0,
+                num_workers_features=0,
             )
         except IndexError as exc:
             # Batch size is always 1 in this deployment (the server is only ever called

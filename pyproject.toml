@@ -10,7 +10,7 @@ readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.14"
 dependencies = [
-    "easytranscriber",
+    "easytranscriber>=0.3.1",
     "easyaligner",
     "webdavclient3",
     "apprise",
@@ -40,6 +40,9 @@ dev = [
 
 [tool.uv]
 package = true
+# easytranscriber 0.3.1 caps torch<2.9 / pyannote-audio<4.0.4, but cp314 wheels only exist for newer
+# torch. The pins are conservative upstream; the test suite is the check. Drop when upstream relaxes.
+override-dependencies = ["torch>=2.7", "torchaudio>=2.7", "pyannote-audio>=3.3.1"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
